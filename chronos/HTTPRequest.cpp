@@ -11,19 +11,27 @@
 
 #include "HTTPRequest.h"
 
+#include "ChallengePagePatterns.h"
+
 #include <algorithm>
+#include <cctype>
+#include <ctime>
 #include <iostream>
+#include <string>
 #include <unordered_set>
 
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 
 #include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "WorkerThread.h"
 #include "CurlWorker.h"
 #include "JobResult.h"
 #include "Utils.h"
+#include "Metrics.h"
 #include "App.h"
 
 using namespace Chronos;
@@ -33,8 +41,7 @@ namespace {
 size_t curlWriteFunction(char *buffer, size_t size, size_t nitems, void *userdata)
 {
 	size_t realSize = size * nitems;
-	std::string data(buffer, realSize);
-	if(!static_cast<HTTPRequest *>(userdata)->processData(data))
+	if(!static_cast<HTTPRequest *>(userdata)->processData(buffer, realSize))
 		return 0;
 	return realSize;
 }
@@ -42,12 +49,89 @@ size_t curlWriteFunction(char *buffer, size_t size, size_t nitems, void *userdat
 size_t curlHeaderFunction(char *buffer, size_t size, size_t nitems, void *userdata)
 {
 	size_t realSize = size * nitems;
-	std::string headerData(buffer, realSize);
-	static_cast<HTTPRequest *>(userdata)->processHeaders(headerData);
+	if(!static_cast<HTTPRequest *>(userdata)->processHeaders(buffer, realSize))
+		return 0;
 	return realSize;
 }
 
-curl_socket_t curlOpenSocketFunction(void *userdata, curlsocktype purpose, struct curl_sockaddr *address)
+bool isExpireDateLabel(const char *line)
+{
+	return strncasecmp(line, "Expire date:", 12) == 0;
+}
+
+void stripFractionalSeconds(std::string &date)
+{
+	for(size_t i = 1; i + 1 < date.size(); ++i)
+	{
+		if(date[i] != '.' || !std::isdigit(static_cast<unsigned char>(date[i - 1])))
+			continue;
+
+		size_t j = i + 1;
+		while(j < date.size() && std::isdigit(static_cast<unsigned char>(date[j])))
+			++j;
+
+		if(j > i + 1)
+		{
+			date.erase(i, j - i);
+			return;
+		}
+	}
+}
+
+uint64_t parseCertExpiryDate(const char *dateStr)
+{
+	std::string normalized(dateStr);
+	stripFractionalSeconds(normalized);
+
+	static const char *formats[] = {
+		"%b %d %H:%M:%S %Y GMT",
+		"%b %d %H:%M:%S %Y",
+		"%Y-%m-%d %H:%M:%S GMT",
+		"%Y-%m-%d %H:%M:%S",
+	};
+
+	struct tm tm = {};
+	for(const char *fmt : formats)
+	{
+		memset(&tm, 0, sizeof(tm));
+		if(strptime(normalized.c_str(), fmt, &tm) == nullptr)
+			continue;
+
+		const time_t expiry = timegm(&tm);
+		if(expiry >= 0)
+			return static_cast<uint64_t>(expiry);
+	}
+
+	return 0;
+}
+
+uint64_t extractSslCertExpiry(CURL *easy)
+{
+	struct curl_certinfo *certinfo = nullptr;
+	if(curl_easy_getinfo(easy, CURLINFO_CERTINFO, &certinfo) != CURLE_OK
+		|| certinfo == nullptr || certinfo->num_of_certs < 1)
+	{
+		return 0;
+	}
+
+	static const size_t prefixLen = 12;
+
+	for(struct curl_slist *info = certinfo->certinfo[0]; info != nullptr; info = info->next)
+	{
+		if(!isExpireDateLabel(info->data))
+			continue;
+
+		const char *dateStr = info->data + prefixLen;
+		while(*dateStr == ' ' || *dateStr == '\t')
+			++dateStr;
+
+		return parseCertExpiryDate(dateStr);
+	}
+
+	return 0;
+}
+
+curl_socket_t curlOpenSocketFunction(void * /*userdata*/, curlsocktype purpose, struct curl_sockaddr *address)
 {
 	if(purpose != CURLSOCKTYPE_IPCXN)
 	{
@@ -55,7 +139,7 @@ curl_socket_t curlOpenSocketFunction(void *userdata, curlsocktype purpose, struc
 		return CURL_SOCKET_BAD;
 	}
 
-	if(!static_cast<HTTPRequest *>(userdata)->verifyPeerAddress(address->addrlen, &address->addr))
+	if(address == nullptr || !App::getInstance()->verifyPeerAddress(address->addrlen, &address->addr))
 	{
 		return CURL_SOCKET_BAD;
 	}
@@ -69,13 +153,16 @@ curl_socket_t curlOpenSocketFunction(void *userdata, curlsocktype purpose, struc
 		{
 		case EMFILE:
 			std::cerr << "ALERT! curlOpenSocketFunction(): socket() returned EMFILE - check thread/request count in config!" << std::endl;
+			Metrics::instance().incrementSocketExhaustion("emfile");
 			break;
 		case ENFILE:
 			std::cerr << "ALERT! curlOpenSocketFunction(): socket() returned ENFILE - check thread/request count in config!" << std::endl;
+			Metrics::instance().incrementSocketExhaustion("enfile");
 			break;
 		case ENOBUFS:
 		case ENOMEM:
 			std::cerr << "ALERT! curlOpenSocketFunction(): socket() returned ENOBUFS/ENOMEM - check thread/request count in config!" << std::endl;
+			Metrics::instance().incrementSocketExhaustion("enobufs");
 			break;
 		default:
 			break;
@@ -118,45 +205,13 @@ int curlDebugFunction(CURL *handle, curl_infotype type, char *data, size_t size,
 	return 0;
 }
 
-std::string sanitizeHttpHeaderKey(std::string key)
-{
-	static const std::unordered_set<char> forbiddenChars = {
-		// CTLs
-		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-		21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 127,
-		// Separators
-		'(', ')', '<', '>', '@',
-		',', ';', ':', '\\', '"',
-		'/', '[', ']', '?', '=',
-		'{', '}', ' '
-	};
-
-	key.erase(std::remove_if(key.begin(), key.end(),
-			[] (char c) { return forbiddenChars.count(c) != 0;  }),
-		key.end());
-
-	return key;
-}
-
-std::string sanitizeHttpHeaderValue(std::string value)
-{
-	static const std::unordered_set<char> forbiddenChars = {
-		10, 13
-	};
-
-	value.erase(std::remove_if(value.begin(), value.end(),
-			[] (char c) { return forbiddenChars.count(c) != 0;  }),
-		value.end());
-
-	return value;
-}
-
 }
 
 HTTPRequest::HTTPRequest(size_t maxSize, int requestTimeout)
 	: result{std::make_unique<JobResult>()}
 	, maxSize{maxSize}
 	, requestTimeout{requestTimeout}
+	, bodyMatcher_(getChallengePagePatterns())
 {
 	if(maxSize == 0 || requestTimeout <= 0)
 	{
@@ -188,56 +243,71 @@ HTTPRequest::~HTTPRequest()
 	}
 }
 
-void HTTPRequest::processHeaders(const std::string &headers)
+bool HTTPRequest::processHeaders(const char *headers, size_t size)
 {
-	if(headers.length() > sizeof("HTTP/1.1 000")
-		&& headers.find("HTTP/") == 0
-		&& headers.at(8) == ' '
-		&& headers.at(12) == ' ')
+	if (size == 0)
 	{
-		result->statusText = headers.substr(13);
+		return true;
+	}
+	if (headers == nullptr)
+	{
+		return false;
+	}
+
+	if(size > sizeof("HTTP/1.1 000")
+		&& strncmp(headers, "HTTP/", 5) == 0
+		&& headers[8] == ' '
+		&& headers[12] == ' ')
+	{
+		result->statusText = std::string(headers + 13, size - 13);
 		while(!result->statusText.empty()
 			&& (result->statusText.back() == '\n'
 				|| result->statusText.back() == '\r'))
 		{
 			result->statusText.pop_back();
 		}
-		return;
+		return true;
 	}
 
-	result->responseHeaders += headers;
+	result->responseHeadersSize += size;
+	if(result->responseHeadersSize > maxSize)
+	{
+		result->responseHeaders = {};
+		return false;
+	}
+
+	if(result->saveResponses)
+	{
+		result->responseHeaders.append(headers, size);
+	}
+	return true;
 }
 
-bool HTTPRequest::processData(const std::string &data)
+bool HTTPRequest::processData(const char *data, size_t size)
 {
-	result->responseBody += data;
+	if (size == 0)
+	{
+		return true;
+	}
+	if (data == nullptr)
+	{
+		return false;
+	}
 
-	if(result->responseBody.length() > maxSize)
+	bodyMatcher_.feed(data, size);
+
+	result->responseBodySize += size;
+	if(result->responseBodySize + result->responseHeadersSize > maxSize)
 	{
 		result->responseBody = {};
 		return false;
 	}
 
+	if(result->saveResponses)
+	{
+		result->responseBody.append(data, size);
+	}
 	return true;
-}
-
-bool HTTPRequest::verifyPeerAddress(unsigned int addressLength, const struct sockaddr *address) const
-{
-	//! @note We don't support IPv6 at the moment.
-	if(address->sa_family != AF_INET)
-	{
-		std::cerr << "Unsupported sa_family: " << address->sa_family << std::endl;
-		return false;
-	}
-
-	if(addressLength != sizeof(struct sockaddr_in))
-	{
-		std::cerr << "Invalid AF_INET address length: " << addressLength << std::endl;
-		return false;
-	}
-
-	const struct sockaddr_in *inAddress = reinterpret_cast<const struct sockaddr_in *>(address);
-	return !App::getInstance()->isIpAddressBlocked(inAddress->sin_addr.s_addr);
 }
 
 void HTTPRequest::done(CURLcode res)
@@ -293,6 +363,7 @@ void HTTPRequest::done(CURLcode res)
 	if (getRes != CURLE_OK)
 		timeTotal = 0;
 	result->timeTotal = timeTotal;
+	result->sslCertExpiry = extractSslCertExpiry(easy);
 
 	switch(res)
 	{
@@ -334,7 +405,8 @@ void HTTPRequest::done(CURLcode res)
 
 			result->httpStatus = httpCode;
 
-			if((httpCode >= 200) && (httpCode < 300))
+			if(((httpCode >= 200) && (httpCode < 300))
+				|| (redirectSuccess && (httpCode == 301 || httpCode == 302 || httpCode == 303 || httpCode == 307 || httpCode == 308)))
 			{
 				result->status 	= JOBSTATUS_OK;
 			}
@@ -349,6 +421,12 @@ void HTTPRequest::done(CURLcode res)
 		result->status 			= JOBSTATUS_FAILED_OTHERS;
 		result->statusText 		= std::string("Other error: ") + curlError + std::string(" (") + std::to_string(res) + std::string(")");
 		break;
+	}
+
+	if(bodyMatcher_.didMatch())
+	{
+		result->status = JOBSTATUS_FAILED_CHALLENGEPAGE;
+		result->statusText = "Challenge page";
 	}
 
 	result->dateDone	= Utils::getTimestampMS();
@@ -372,7 +450,7 @@ void HTTPRequest::setupEasyHandle()
 	curl_easy_setopt(easy, CURLOPT_FORBID_REUSE,		1);
 	curl_easy_setopt(easy, CURLOPT_FRESH_CONNECT,		1);
 	curl_easy_setopt(easy, CURLOPT_PRIVATE,				this);
-	curl_easy_setopt(easy, CURLOPT_PROTOCOLS,			CURLPROTO_HTTP | CURLPROTO_HTTPS);
+	curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR,		"http,https");
 	curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 		0);
 	curl_easy_setopt(easy, CURLOPT_NOPROGRESS,			1);
 	curl_easy_setopt(easy, CURLOPT_ERRORBUFFER,			curlError);
@@ -388,6 +466,7 @@ void HTTPRequest::setupEasyHandle()
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER,		0);
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST,		0);
 	curl_easy_setopt(easy, CURLOPT_CAINFO,				NULL);
+	curl_easy_setopt(easy, CURLOPT_CERTINFO,			1L);
 	curl_easy_setopt(easy, CURLOPT_IPRESOLVE,			CURL_IPRESOLVE_V4);
 }
 
@@ -467,12 +546,12 @@ void HTTPRequest::submit(CurlWorker *worker)
 	{
 		for(const auto &header : requestHeaders)
 		{
-			const std::string headerKey = sanitizeHttpHeaderKey(header.first);
-			if (strcasecmp(headerKey.c_str(), "user-agent") == 0
-				|| strcasecmp(headerKey.c_str(), "connection") == 0
-				|| strcasecmp(headerKey.c_str(), "x-forwarded-for") == 0)
+			const std::string headerKey = Utils::sanitizeHttpHeaderKey(header.first);
+			if (Utils::isBannedHeaderKey(headerKey))
+			{
 				continue;
-			std::string head = headerKey + ": " + sanitizeHttpHeaderValue(header.second);
+			}
+			std::string head = headerKey + ": " + Utils::sanitizeHttpHeaderValue(header.second);
 			headerList = curl_slist_append(headerList, head.c_str());
 		}
 
@@ -508,9 +587,9 @@ void HTTPRequest::submit(CurlWorker *worker)
 		addedToWorker = true;
 }
 
-HTTPRequest *HTTPRequest::fromURL(const std::string &url, int userID, size_t maxSize, int requestTimeout)
+std::unique_ptr<HTTPRequest> HTTPRequest::fromURL(const std::string &url, int userID, size_t maxSize, int requestTimeout)
 {
-	HTTPRequest *req = new HTTPRequest(maxSize, requestTimeout);
+	std::unique_ptr<HTTPRequest> req(new HTTPRequest(maxSize, requestTimeout));
 	req->result->userID = userID;
 	req->result->url = url;
 	req->url = url;

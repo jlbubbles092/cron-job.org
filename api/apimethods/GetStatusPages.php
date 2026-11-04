@@ -11,13 +11,17 @@ class GetStatusPages extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(5, RateLimit::SECOND)
     ];
   }
 
   public function validateRequest($request) {
+    global $config;
+    if ($config['statusPageDomain'] === null) {
+      return false;
+    }
     return true;
   }
 

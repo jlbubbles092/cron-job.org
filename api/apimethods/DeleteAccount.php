@@ -11,7 +11,7 @@ class DeleteAccount extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, RateLimit::SECOND)
     ];
@@ -31,6 +31,8 @@ class DeleteAccount extends AbstractAPIMethod {
         throw new InternalErrorAPIException();
       }
     } catch (InvalidEmailAddressException $ex) {
+      throw new ForbiddenAPIException();
+    } catch (ActiveSubscriptionException $ex) {
       throw new ForbiddenAPIException();
     } catch (FailedToDeleteAccountException $ex) {
       throw new InternalErrorAPIException();

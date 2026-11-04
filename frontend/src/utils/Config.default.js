@@ -2,17 +2,19 @@ export const Config = {
   //! @note Adjust project name, domains and URLs accordingly.
   'productName': 'cron-job.org OSS',
   'baseURL': 'https://example.com',
-  'twitterURL': 'https://twitter.com/CronJobOrg',
+  'twitterURL': 'https://x.com/CronJobOrg',
   'githubURL': 'https://github.com/pschlan/cron-job.org',
   'privacyPolicyURL': 'https://example.com/privacy/',
   'termsOfServiceURL': 'https://example.com/tos/',
   'returnPolicyURL': 'https://example.com/returnpolicy/',
+  'apiDocsURL': 'https://example.com/docs/rest-api.html',
+  'variablesDocsURL': 'https://example.com/creating-cron-jobs.html#cron-job-variables',
 
   //! @note The URL of the API webserver (/api/ folder in this repo)
   'apiURL': 'https://api.example.com/',
 
-  //! @note Put your reCAPTCHA site key here.
-  'recaptchaSiteKey': 'PLACE_RECAPTCHA_SITE_KEY_HERE',
+  //! @note Put your turnstile site key here.
+  'turnstileSiteKey': 'PLACE_TURNSTILE_SITE_KEY_HERE',
 
   /****************************************************************************************
    ******** The following settings might be kept as is. Customization is optional. ********
@@ -22,15 +24,28 @@ export const Config = {
   //!       to add the new language code here.
   'languages': {
     'en': 'English',
+    'da': 'Dansk',
     'de': 'Deutsch',
-    'it': 'Italiano'
+    'it': 'Italiano',
+    'fr': 'Français',
+    'zh_TW': '正體中文',
+    'ro': 'Română',
+    'pl': 'Polski',
+    'pt_BR': 'Português Brasil',
+    'zh_CN': '简体中文',
+    'hu_HU': 'Magyar',
+    'tr_TR': 'Türkçe',
+    'ar': 'عربي',
+    'id': 'Bahasa Indonesia',
+    'es': 'Español',
+    'uk': 'Українська'
   },
 
   //! @note Fallback language to use when the user's auto-determined language is not supported.
   'fallbackLanguage': 'en',
 
   //! @note Session token refresh interval in ms.
-  'sessionRefreshInterval': 10*60*1000,
+  'sessionRefreshInterval': 10 * 60 * 1000,
 
   //! @note A donation box can be enabled here. It will be shown when the user exceeds the
   //!       configured successful job count threshold.
@@ -43,7 +58,8 @@ export const Config = {
   //! @note If you want to offer a membership, define the amounts here.
   'sustainingMembership': {
     'enable': false,
-    'amounts': [5, 10, 20],
+    'amountsAMonth': [5, 10, 20],
+    'amountsAYear': [12, 24, 36],
     'box': {
       'enable': false,
       'successfulJobsThreshold': 1
@@ -54,4 +70,6 @@ export const Config = {
   'enableStatusPages': false,
   'statusPageDomain': 'status.example.com',
   'maxLogoSize': 1024 * 128,
+
+  'enableYubicoOTP': true,
 };

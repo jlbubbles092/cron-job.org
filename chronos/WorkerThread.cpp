@@ -14,10 +14,15 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <chrono>
+
+#include <unistd.h>
 
 #include "CurlWorker.h"
 #include "UpdateThread.h"
 #include "App.h"
+#include "Metrics.h"
+#include "MasterClientMetrics.h"
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TSocket.h>
@@ -28,18 +33,24 @@
 
 using namespace Chronos;
 
-WorkerThread::WorkerThread(int mday, int month, int year, int hour, int minute, std::size_t parallelJobs, std::size_t deferMs)
-	: mday(mday), month(month), year(year), hour(hour), minute(minute), parallelJobs(parallelJobs), deferMs(deferMs)
+WorkerThread::WorkerThread(int mday, int month, int year, int hour, int minute, std::size_t parallelJobs, std::size_t deferMs, JobType_t jobType)
+	: mday(mday), month(month), year(year), hour(hour), minute(minute), parallelJobs(parallelJobs), deferMs(deferMs), jobType(jobType)
 {
+	runningJobs.reserve(parallelJobs);
 }
 
 WorkerThread::~WorkerThread()
 {
+	if(!runningJobs.empty())
+	{
+		std::cerr << "WorkerThread::~WorkerThread(): runningJobs is not empty: " << runningJobs.size() << std::endl;
+		runningJobs.clear();
+	}
 }
 
-void WorkerThread::addJob(HTTPRequest *req)
+void WorkerThread::addJob(std::unique_ptr<HTTPRequest> req)
 {
-	requestQueue.push(req);
+	requestQueue.push(std::move(req));
 }
 
 void WorkerThread::run()
@@ -48,6 +59,8 @@ void WorkerThread::run()
 		return;
 
 	keepAlive = shared_from_this();
+
+	Metrics::instance().adjustWorkerThreads(jobType, 1);
 
 	workerThread = std::thread(std::bind(&WorkerThread::threadMain, this));
 	workerThread.detach();
@@ -60,15 +73,19 @@ void WorkerThread::runJobs()
 
 	inRunJobs = true;
 
-	while(runningJobs < parallelJobs && !requestQueue.empty())
+	while(runningJobs.size() < parallelJobs && !requestQueue.empty())
 	{
-		HTTPRequest *job = requestQueue.front();
+		auto job = std::move(requestQueue.front());
 		requestQueue.pop();
 
-		++runningJobs;
+		HTTPRequest *request = job.get();
 
-		job->onDone = std::bind(&WorkerThread::jobDone, this, job);
-		job->submit(curlWorker.get());
+		runningJobs.emplace(request, std::move(job));
+
+		Metrics::instance().adjustWorkerInflight(request->result->jobType, 1);
+
+		request->onDone = std::bind(&WorkerThread::jobDone, this, request);
+		request->submit(curlWorker.get());
 	}
 
 	inRunJobs = false;
@@ -106,20 +123,29 @@ void WorkerThread::jobDone(HTTPRequest *req)
 		++failedJobs;
 	}
 
+	metricsBatch.record(*req->result);
+	Metrics::instance().adjustWorkerInflight(req->result->jobType, -1);
+
 	// push result to result queue
 	UpdateThread::getInstance()->addResult(std::move(req->result));
 
 	// clean up
-	delete req;
-	if(runningJobs > 0)
-		--runningJobs;
+	if (runningJobs.erase(req) == 0)
+	{
+		std::cerr << "WorkerThread::jobDone(): request not found in runningJobs: " << req << std::endl;
+	}
 
 	// start more jobs
 	runJobs();
 
 	// exit event loop when all requests have finished
-	if(runningJobs == 0 && curlWorker)
-		curlWorker->stop();
+	if(runningJobs.empty() && curlWorker)
+	{
+		if(requestQueue.empty() || !inRunJobs)
+		{
+			curlWorker->stop();
+		}
+	}
 }
 
 void WorkerThread::addStat()
@@ -152,8 +178,9 @@ void WorkerThread::addStat()
 		stats.jobs = jobCount;
 		stats.jitter = jitterAvg;
 
-		masterClient->reportNodeStats(App::getInstance()->config->getInt("node_id"),
-			stats);
+		callMaster("reportNodeStats", [&]() {
+			masterClient->reportNodeStats(App::getInstance()->config->getInt("node_id"), stats);
+		});
 
 		masterTransport->close();
 
@@ -171,6 +198,8 @@ void WorkerThread::addStat()
 
 void WorkerThread::threadMain()
 {
+	const auto threadStart = std::chrono::steady_clock::now();
+
 	try
 	{
 		std::cout << "WorkerThread::threadMain(): Entered" << std::endl;
@@ -201,6 +230,8 @@ void WorkerThread::threadMain()
 		// clean up
 		curlWorker.reset();
 
+		Metrics::instance().mergeWorkerBatch(metricsBatch);
+
 		addStat();
 
 		std::cout << "WorkerThread::threadMain(): Finished" << std::endl;
@@ -210,5 +241,8 @@ void WorkerThread::threadMain()
 		std::cout << "WorkerThread::threadEntry(): Exception: " << ex.what() << std::endl;
 	}
 
+	const std::chrono::duration<double> lifetime = std::chrono::steady_clock::now() - threadStart;
+	Metrics::instance().observeWorkerThreadLifetimeSeconds(jobType, lifetime.count());
+	Metrics::instance().adjustWorkerThreads(jobType, -1);
 	keepAlive.reset();
 }

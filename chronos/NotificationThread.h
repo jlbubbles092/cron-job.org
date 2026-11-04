@@ -19,11 +19,14 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <atomic>
 
 #include "Notification.h"
 
 class ChronosMasterClient;
 class Mail;
+class UserDetails;
+class NotificationChannel;
 
 namespace apache { namespace thrift {
 
@@ -32,6 +35,7 @@ class TProtocol;
 }
 
 namespace transport {
+class TSocket;
 class TTransport;
 }
 
@@ -39,9 +43,13 @@ class TTransport;
 
 namespace Chronos
 {
+	class MySQL_DB;
+
 	class NotificationThread
 	{
 	public:
+		class DispatchThread;
+
 		NotificationThread();
 		~NotificationThread();
 
@@ -57,29 +65,38 @@ namespace Chronos
 		void stopThread();
 		void addNotification(Notification &&notification);
 
-    private:
-		void syncPhrases();
+	private:
+		void connectMaster();
+		void resetMaster();
+		bool syncPhrases();
+		bool fetchUserDetails(const Notification &notification, UserDetails &userDetails, std::string &error, bool &userMismatch);
 		std::string getPhrase(const std::string &lang, const std::string &key) const;
 		std::string formatDate(const std::string &lang, const uint64_t date) const;
 		std::string formatStatus(const std::string &lang, const Notification &notification) const;
-        void processNotification(const Notification &notification);
-		void sendMail(const Mail &mail) const;
+        void processNotification(Notification &notification);
+		void sendMailNotification(const Notification &notification, const UserDetails &userDetails, const NotificationChannel &channel) const;
+		void sendWebhookNotification(const Notification &notification, const UserDetails &userDetails, const NotificationChannel &channel) const;
 
 	private:
-		bool stop = false;
+		std::atomic<bool> stop{false};
 		static NotificationThread *instance;
 		std::mutex queueMutex;
 		std::condition_variable queueSignal;
 		std::queue<Notification> queue;
-		std::shared_ptr<apache::thrift::transport::TTransport> masterSocket;
+		std::shared_ptr<apache::thrift::transport::TSocket> masterSocket;
 		std::shared_ptr<apache::thrift::transport::TTransport> masterTransport;
 		std::shared_ptr<apache::thrift::protocol::TProtocol> masterProtocol;
 		std::shared_ptr<ChronosMasterClient> masterClient;
 		std::string defaultLang;
 		std::string mailFrom;
+		std::string mailVerpSecret;
 		std::string mailSender;
+		std::string mailProjectName;
+		std::string mailLogoURL;
 		std::string smtpServer;
 		std::unordered_map<std::string, std::unordered_map<std::string, std::string>> phrases;
+		std::unique_ptr<DispatchThread> dispatchThread;
+		std::unique_ptr<MySQL_DB> db;
 	};
 };
 

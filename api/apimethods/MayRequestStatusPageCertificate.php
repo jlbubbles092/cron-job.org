@@ -11,11 +11,15 @@ class MayRequestStatusPageCertificate extends AbstractAPIMethod {
     return false;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [];
   }
 
   public function validateRequest($request) {
+    global $config;
+    if ($config['statusPageDomain'] === null) {
+      return false;
+    }
     return (
          isset($request->domain)
       && strlen($request->domain) >= 3

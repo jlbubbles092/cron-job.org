@@ -3,42 +3,55 @@ CREATE TABLE `job` (
   `userid` int(11) NOT NULL DEFAULT '0',
   `type` tinyint(4) NOT NULL DEFAULT '0',
   `enabled` tinyint(4) NOT NULL DEFAULT '1',
-  `title` varchar(128) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
-  `url` varchar(255) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
+  `title` varchar(512) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `url` varchar(1024) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `auth_enable` tinyint(1) NOT NULL DEFAULT '0',
-  `auth_user` varchar(128) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
-  `auth_pass` varchar(128) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
+  `auth_user` varchar(512) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `auth_pass` varchar(512) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `notify_failure` tinyint(1) NOT NULL DEFAULT '1',
+  `notify_failure_count` int(11) NOT NULL DEFAULT '1',
   `notify_success` tinyint(1) NOT NULL DEFAULT '1',
   `notify_disable` tinyint(1) NOT NULL DEFAULT '1',
+  `notify_ssl_cert_expiry` tinyint(1) NOT NULL DEFAULT '0',
+  `notify_ssl_cert_expiry_seconds` int(11) NOT NULL DEFAULT '604800',
+  `notification_mode` tinyint(4) NOT NULL DEFAULT '1',
+  `selected_notification_channels` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `last_status` tinyint(4) NOT NULL DEFAULT '0',
   `last_fetch` int(11) NOT NULL DEFAULT '0',
   `last_duration` int(11) NOT NULL DEFAULT '0',
+  `ssl_cert_expiry` int(11) NOT NULL DEFAULT '0',
+  `ssl_cert_expiry_notified` int(11) NOT NULL DEFAULT '0',
   `fail_counter` int(11) NOT NULL DEFAULT '0',
+  `unfiltered_fail_counter` int(11) NOT NULL DEFAULT '0',
   `save_responses` tinyint(4) NOT NULL DEFAULT '0',
   `request_method` tinyint(4) NOT NULL DEFAULT '0',
   `timezone` varchar(32) NOT NULL DEFAULT 'Europe/Berlin',
   `usergroupid` int(11) NOT NULL DEFAULT '1',
   `request_timeout` int(11) NOT NULL DEFAULT '-1',
+  `redirect_success` tinyint(4) NOT NULL DEFAULT '0',
+  `expires_at` bigint(14) NOT NULL DEFAULT '0',
+  `folderid` int(11) NOT NULL DEFAULT 0,
+  `schedule_load_factor` FLOAT DEFAULT NULL,
   PRIMARY KEY (`jobid`),
   KEY `userid` (`userid`),
-  KEY `timezone` (`timezone`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+  KEY `timezone` (`timezone`),
+  KEY `expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `job_body` (
   `jobid` int(11) NOT NULL DEFAULT '0',
-  `body` text NOT NULL,
+  `body` text COLLATE utf8mb4_unicode_ci NOT NULL,
   PRIMARY KEY (`jobid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `job_header` (
   `jobheaderid` int(11) NOT NULL AUTO_INCREMENT,
   `jobid` int(11) NOT NULL DEFAULT '0',
-  `key` varchar(64) NOT NULL DEFAULT '',
-  `value` text NOT NULL DEFAULT '',
+  `key` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `value` text COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`jobheaderid`),
   KEY `jobid` (`jobid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `job_hours` (
   `jobid` int(11) NOT NULL DEFAULT '0',
@@ -82,6 +95,11 @@ CREATE TABLE `notification` (
   `execution_status` tinyint(4) NOT NULL DEFAULT '0',
   `execution_status_text` varchar(255) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
   `execution_http_status` int(11) NOT NULL DEFAULT '0',
+  `notificationchannelid` int(11) NOT NULL DEFAULT '0',
+  `notificationchanneltype` tinyint(4) NOT NULL DEFAULT '0',
+  `notificationchanneldestination` varchar(255) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
+  `result` tinyint(4) NOT NULL DEFAULT '0',
+  `result_details` varchar(255) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`notificationid`),
   KEY `jobid` (`jobid`),
   KEY `joblogid` (`joblogid`)

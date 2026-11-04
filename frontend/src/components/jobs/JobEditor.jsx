@@ -1,26 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useHistory, Link as RouterLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import {
   LinearProgress, Paper, makeStyles, TextField, Switch, FormControl, FormLabel,
   FormGroup, FormControlLabel, Select, MenuItem, InputLabel, TableContainer, Button,
   IconButton, Tabs, Tab, Grid, CircularProgress, Dialog, DialogTitle, DialogContent,
-  DialogContentText, DialogActions, InputAdornment
+  DialogContentText, DialogActions, InputAdornment,
+  Box, RadioGroup, Radio, Checkbox, Typography, Link as MuiLink
 } from '@material-ui/core';
 import { grey } from '@material-ui/core/colors';
+import { Alert, AlertTitle } from '@material-ui/lab';
 import { useSnackbar } from 'notistack';
 
 import {
   getJobDetails, updateJob, createJob,
   deleteJob as apiDeleteJob,
-  cloneJob as apiCloneJob
+  cloneJob as apiCloneJob,
+  getNotificationChannels
 } from '../../utils/API';
 import {
   RegexPatterns,
   RequestMethod,
-  RequestMethodsSupportingCustomBody
+  RequestMethodsSupportingCustomBody,
+  JobNotificationMode,
+  NotificationChannelType,
+  notificationChannelTypeKey
 } from '../../utils/Constants';
+import { isKnownWebhookPreset, formatNotificationChannelIdentity } from '../../utils/WebhookPresets';
+import { notificationChannelTypeIcon } from '../settings/NotificationChannelTypeIcon';
+import { looksLikeHttpCommand, parseHttpCommand, looksLikeCrontabLine, parseCrontabLine } from '../../utils/CommandParser';
 import useTimezones from '../../hooks/useTimezones';
 import NotFound from '../misc/NotFound';
 import Breadcrumbs from '../misc/Breadcrumbs';
@@ -41,11 +50,20 @@ import CloneIcon from '@material-ui/icons/FileCopy';
 import TestIcon from '@material-ui/icons/PlayCircleOutline';
 import TimerIcon from '@material-ui/icons/Timer';
 import ExportIcon from '@material-ui/icons/ImportExport';
+import StatusBadgeIcon from '@material-ui/icons/Label';
+import FolderIcon from '@material-ui/icons/FolderOutlined';
+import ApplyIcon from '@material-ui/icons/DoubleArrow';
+import CodeIcon from '@material-ui/icons/Code';
+import NotificationsIcon from '@material-ui/icons/Notifications';
 import ValidatingTextField from '../misc/ValidatingTextField';
 import clsx from 'clsx';
 import useUserProfile from '../../hooks/useUserProfile';
 import JobTestRun from './JobTestRun';
 import JobExport from './JobExport';
+import CurlImportDialog from './CurlImportDialog';
+import useFolder from '../../hooks/useFolder';
+import VariableMenu from '../misc/VariableMenu';
+import JobStatusBadgeDialog from './JobStatusBadgeDialog';
 
 const useStyles = makeStyles((theme) => ({
   paper: {
@@ -90,11 +108,48 @@ const useStyles = makeStyles((theme) => ({
   },
   tableContainer: {
     marginBottom: theme.spacing(2)
+  },
+  channelList: {
+    marginLeft: theme.spacing(4),
+    marginTop: theme.spacing(0.5),
+    marginBottom: theme.spacing(1)
+  },
+  channelHint: {
+    marginLeft: theme.spacing(4),
+    marginBottom: theme.spacing(1)
+  },
+  channelLabel: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: theme.spacing(1)
+  },
+  channelIcon: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 18,
+    height: 18,
+    flexShrink: 0,
+    color: theme.palette.text.secondary,
+    '& > svg': {
+      fontSize: 18
+    }
+  },
+  channelStatusNote: {
+    marginLeft: theme.spacing(0.75),
+    fontSize: '0.75em',
+    color: theme.palette.text.secondary
   }
 }));
 
+let nextHeaderId = 0;
+function newHeaderId() {
+  return `header-${++nextHeaderId}`;
+}
+
 export default function JobEditor({ match }) {
   //! @todo Check URL for >/dev/null etc.
+  const { folderId, folderBreadcrumb, urlPrefix, folders } = useFolder(match);
 
   const { t } = useTranslation();
   const classes = useStyles();
@@ -110,29 +165,72 @@ export default function JobEditor({ match }) {
   const [ jobTitle, setJobTitle ] = useState('');
   const [ jobURL, setJobURL ] = useState('');
   const jobURLRef = useRef();
+  const [ urlFieldKey, setUrlFieldKey ] = useState(0);
+  const [ detectedCommand, setDetectedCommand ] = useState(null);
+  const requestTimeoutRef = useRef();
+  const requestBodyRef = useRef();
+  const authUserRef = useRef();
+  const authPasswordRef = useRef();
   const [ jobEnabled, setJobEnabled ] = useState(false);
   const [ saveResponses, setSaveResponses ] = useState(false);
   const [ requestTimeout, setRequestTimeout ] = useState(-1);
+  const [ redirectSuccess, setRedirectSuccess ] = useState(false);
   const [ authEnable, setAuthEnable ] = useState(false);
   const [ authUser, setAuthUser ] = useState('');
   const [ authPassword, setAuthPassword ] = useState('');
-  const [ notification, setNotification ] = useState({ onSuccess: false, onFailure: false, onDisable: true });
+  const [ notification, setNotification ] = useState({
+    onSuccess: false,
+    onFailure: false,
+    onFailureCount: 1,
+    onDisable: true,
+    onSslCertExpiry: false,
+    onSslCertExpirySeconds: 604800,
+    mode: JobNotificationMode.ALL,
+    selectedChannels: []
+  });
+  const [ notificationChannels, setNotificationChannels ] = useState([]);
+  const [ notificationChannelsLoading, setNotificationChannelsLoading ] = useState(true);
   const [ requestMethod, setRequestMethod ] = useState(RequestMethod.GET);
   const [ requestBody, setRequestBody ] = useState('');
   const [ jobHeaders, setJobHeaders ] = useState([]);
   const [ schedule, setSchedule ] = useState({});
+  const [ scheduleOverride, setScheduleOverride ] = useState(null);
+  const [ scheduleKey, setScheduleKey ] = useState(0);
   const [ timezone, setTimezone ] = useState();
+  const [ jobFolderId, setJobFolderId ] = useState();
   const [ tabValue, setTabValue ] = useState('common');
   const [ saving, setSaving ] = useState(false);
   const [ showDeleteJob, setShowDeleteJob ] = useState(false);
   const [ showTestRun, setShowTestRun ] = useState(false);
   const [ showExportJob, setShowExportJob ] = useState(false);
+  const [ showCurlImport, setShowCurlImport ] = useState(false);
+  const [ showStatusBadgeDialog, setShowStatusBadgeDialog ] = useState(false);
   const [ updatedJob, setUpdatedJob ] = useState({});
+  const [ bodyLooksLikeJson, setBodyLooksLikeJson ] = useState(false);
+  const [ showContentTypeNote, setShowContentTypeNote ] = useState(false);
 
   const createMode = (jobId === -1);
 
+  useEffect(() => {
+    if (bodyLooksLikeJson && RequestMethodsSupportingCustomBody.includes(requestMethod)) {
+      if (!jobHeaders.map(x => x['key'].toLowerCase().trim()).includes('content-type')) {
+        setShowContentTypeNote(true);
+        return;
+      }
+    }
+    setShowContentTypeNote(false);
+  }, [bodyLooksLikeJson, jobHeaders, requestMethod]);
+
   //! @todo Export, import
   //! @todo Show warning on leave if not saved?
+
+  useEffect(() => {
+    setNotificationChannelsLoading(true);
+    getNotificationChannels()
+      .then(response => setNotificationChannels(response.notificationChannels || []))
+      .catch(() => setNotificationChannels([]))
+      .finally(() => setNotificationChannelsLoading(false));
+  }, []);
 
   useEffect(() => {
     if (createMode) {
@@ -144,6 +242,7 @@ export default function JobEditor({ match }) {
         enabled: true,
         saveResponses: false,
         requestTimeout: Math.min(30, userProfile.userGroup.requestTimeout),
+        redirectSuccess: false,
         auth: {
           enable: false,
           user: '',
@@ -162,18 +261,69 @@ export default function JobEditor({ match }) {
           headers: {}
         },
         notification: {
-          onSuccess: true,
+          onSuccess: false,
           onDisable: true,
-          onFailure: false
+          onFailure: false,
+          onFailureCount: 1,
+          onSslCertExpiry: false,
+          onSslCertExpirySeconds: 604800,
+          mode: JobNotificationMode.ALL,
+          selectedChannels: []
         },
-        requestMethod: RequestMethod.GET
+        requestMethod: RequestMethod.GET,
+        folderId
       });
     } else {
       getJobDetails(jobId)
         .then(result => setJob(result.jobDetails))
         .catch(() => setIsLoading(false));
     }
-  }, [jobId, createMode, userProfile]);
+  }, [jobId, createMode, userProfile, folderId]);
+
+  function analyzeBody(value) {
+    value = (''+value).trim();
+    if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+      setBodyLooksLikeJson(true);
+    } else {
+      setBodyLooksLikeJson(false);
+    }
+  }
+
+  function toggleSelectedChannel(channelId, checked) {
+    setNotification(x => {
+      const current = Array.isArray(x.selectedChannels) ? x.selectedChannels : [];
+      const next = checked
+        ? (current.includes(channelId) ? current : [...current, channelId])
+        : current.filter(id => id !== channelId);
+      return { ...x, selectedChannels: next };
+    });
+  }
+
+  function channelLabel(channel) {
+    const typeKey = isKnownWebhookPreset(channel.preset)
+      ? channel.preset
+      : notificationChannelTypeKey(channel.type);
+    const typeLabel = t('settings.notificationChannels.types.' + typeKey);
+    const destination = channel.builtIn
+      ? t('jobs.notificationChannels.accountEmail')
+      : formatNotificationChannelIdentity(channel);
+    const text = destination ? `${typeLabel} · ${destination}` : typeLabel;
+    let statusNote = null;
+    if (!channel.enabled) {
+      statusNote = t('jobs.notificationChannels.disabled');
+    } else if (!channel.builtIn && channel.type === NotificationChannelType.EMAIL && !channel.confirmed) {
+      statusNote = t('jobs.notificationChannels.pendingConfirmation');
+    }
+    return (
+      <span className={classes.channelLabel}>
+        <span className={classes.channelIcon}>{notificationChannelTypeIcon(typeKey)}</span>
+        <span>
+          {text}
+          {statusNote && <span className={classes.channelStatusNote}>({statusNote})</span>}
+        </span>
+      </span>
+    );
+  }
 
   useEffect(() => {
     if (job && userProfile && userProfile.userGroup) {
@@ -182,18 +332,39 @@ export default function JobEditor({ match }) {
       setJobEnabled(!!job.enabled);
       setSaveResponses(!!job.saveResponses);
       setRequestTimeout(job.requestTimeout > 0 ? Math.min(job.requestTimeout, userProfile.userGroup.requestTimeout) : userProfile.userGroup.requestTimeout);
+      setRedirectSuccess(job.redirectSuccess);
       setAuthEnable(!!job.auth.enable);
       setAuthUser(job.auth.user);
       setAuthPassword(job.auth.password);
-      setNotification(job.notification);
+      setNotification({
+        onSslCertExpiry: false,
+        onSslCertExpirySeconds: 604800,
+        ...job.notification,
+        mode: (job.notification && job.notification.mode != null)
+          ? job.notification.mode
+          : JobNotificationMode.ALL,
+        selectedChannels: (job.notification && Array.isArray(job.notification.selectedChannels))
+          ? job.notification.selectedChannels
+          : []
+      });
       setRequestMethod(job.requestMethod);
       setRequestBody(job.extendedData.body);
+      analyzeBody(job.extendedData.body);
       setTimezone(job.schedule.timezone);
       setJobHeaders(Object.keys(job.extendedData.headers).reduce((prev, cur) =>
-        [...prev, { key: cur, value: job.extendedData.headers[cur] }], []));
+        [...prev, { key: cur, value: job.extendedData.headers[cur], uuid: newHeaderId() }], []));
       setIsLoading(false);
+      setJobFolderId(job.folderId);
+
+      if (job.folderId !== folderId) {
+        if (job.folderId === 0) {
+          history.push('/jobs/' + job.jobId);
+        } else {
+          history.push('/jobs/folders/' + job.folderId + '/' + job.jobId)
+        }
+      }
     }
-  }, [job, userProfile]);
+  }, [job, userProfile, folderId, history]);
 
   useEffect(() => {
     setUpdatedJob({
@@ -202,6 +373,7 @@ export default function JobEditor({ match }) {
       enabled: jobEnabled,
       saveResponses,
       requestTimeout,
+      redirectSuccess,
       auth: {
         enable: authEnable,
         user: authUser,
@@ -216,14 +388,23 @@ export default function JobEditor({ match }) {
       schedule: {
         ...schedule,
         timezone
-      }
+      },
+      folderId: jobFolderId
     });
-  }, [jobTitle, jobURL, jobEnabled, saveResponses, requestTimeout, authEnable, authUser, authPassword, notification, requestMethod, requestBody, jobHeaders, schedule, timezone]);
+  }, [jobTitle, jobURL, jobEnabled, saveResponses, requestTimeout, redirectSuccess, authEnable, authUser, authPassword, notification, requestMethod, requestBody, jobHeaders, schedule, timezone, jobFolderId]);
+
+  const maxRequestTimeout = (userProfile && userProfile.userGroup && userProfile.userGroup.requestTimeout) || 30;
 
   function saveJob() {
     if (!jobURL.match(RegexPatterns.url)) {
       enqueueSnackbar(t('jobs.invalidUrl'), { variant: 'error' });
       jobURLRef.current && jobURLRef.current.focus();
+      return;
+    }
+
+    if (updatedJob.requestTimeout > maxRequestTimeout) {
+      enqueueSnackbar(t('jobs.invalidTimeout', { maxRequestTimeout }), { variant: 'error' });
+      requestTimeoutRef.current && requestTimeoutRef.current.focus();
       return;
     }
 
@@ -233,9 +414,15 @@ export default function JobEditor({ match }) {
       createJob(updatedJob)
         .then(() => {
           enqueueSnackbar(t('jobs.created'), { variant: 'success' });
-          history.push('/jobs');
+          history.push(jobFolderId === 0 ? '/jobs' : '/jobs/folders/' + jobFolderId);
         })
-        .catch(() => enqueueSnackbar(t('jobs.failedToCreate'), { variant: 'error' }))
+        .catch(error => {
+          if (error.response && error.response.status === 422) {
+            enqueueSnackbar(t('common.requestDeniedForSecurityReasons'), { variant: 'error' });
+          } else {
+            enqueueSnackbar(t('jobs.failedToCreate'), { variant: 'error' });
+          }
+        })
         .finally(() => setSaving(false));
     } else {
       updateJob(jobId, updatedJob)
@@ -244,7 +431,13 @@ export default function JobEditor({ match }) {
           setJob(result.jobDetails);
           enqueueSnackbar(t('jobs.saved'), { variant: 'success' });
         })
-        .catch(() => enqueueSnackbar(t('jobs.failedToSave'), { variant: 'error' }))
+        .catch(error => {
+          if (error.response && error.response.status === 422) {
+            enqueueSnackbar(t('common.requestDeniedForSecurityReasons'), { variant: 'error' });
+          } else {
+            enqueueSnackbar(t('jobs.failedToSave'), { variant: 'error' });
+          }
+        })
         .finally(() => setSaving(false));
     }
   }
@@ -253,7 +446,7 @@ export default function JobEditor({ match }) {
     apiDeleteJob(jobId)
       .then(() => {
         enqueueSnackbar(t('jobs.deleted'), { variant: 'success' });
-        history.push('/jobs');
+        history.push(urlPrefix);
       })
       .catch(() => enqueueSnackbar(t('jobs.failedToDelete'), { variant: 'error' }))
       .finally(() => setShowDeleteJob(false));
@@ -263,7 +456,7 @@ export default function JobEditor({ match }) {
     apiCloneJob(jobId, t('jobs.cloneSuffix'))
       .then(result => {
         enqueueSnackbar(t('jobs.cloned'), { variant: 'success' });
-        history.push('/jobs/' + result.jobId);
+        history.push(urlPrefix + '/' + result.jobId);
       })
       .catch(() => enqueueSnackbar(t('jobs.failedToClone'), { variant: 'error' }));
   }
@@ -281,18 +474,122 @@ export default function JobEditor({ match }) {
   }
 
   function addHeader() {
-    setJobHeaders(headers => [...headers, {key: '', value: ''}]);
+    setJobHeaders(headers => [...headers, {key: '', value: '', uuid: newHeaderId()}]);
   }
 
   function updateHeaderKey(rowNo, key) {
-    setJobHeaders(headers => headers.map((x, index) => index === rowNo ? {...x, key} : x));
+    key = key.trim();
+    if (key.endsWith(':')) {
+      key = key.substring(0, key.length - 1).trim();
+    }
+    setJobHeaders(headers => headers.map((x, index) => index === rowNo ? {...x, key: key} : x));
   }
 
   function updateHeaderValue(rowNo, value) {
-    setJobHeaders(headers => headers.map((x, index) => index === rowNo ? {...x, value} : x));
+    setJobHeaders(headers => headers.map((x, index) => index === rowNo ? {...x, value: value.trim()} : x));
   }
 
-  const maxRequestTimeout = (userProfile && userProfile.userGroup && userProfile.userGroup.requestTimeout) || 30;
+  function updateUrl(url) {
+    setJobURL(url);
+    setTabValue('common');
+    if (jobURLRef.current) {
+      jobURLRef.current.value = url;
+    }
+    // The URL field manages its own value internally (see ValidatingTextField),
+    // so bump its key to remount it and pick up the new value when we set the
+    // URL programmatically (test-run redirect, cURL/wget import, ...).
+    setUrlFieldKey(key => key + 1);
+    setShowTestRun(false);
+  }
+
+  // Detect a curl/wget command pasted into the URL field and remember the parsed
+  // result so we can offer a one-click import (GitHub issue #103).
+  function detectCommandInUrl(value) {
+    if (looksLikeCrontabLine(value)) {
+      const parsed = parseCrontabLine(value);
+      if (parsed && parsed.command && parsed.command.url) {
+        setDetectedCommand({ ...parsed.command, _schedule: parsed.schedule });
+      } else {
+        setDetectedCommand(null);
+      }
+    } else if (looksLikeHttpCommand(value)) {
+      const parsed = parseHttpCommand(value);
+      setDetectedCommand(parsed && parsed.url ? parsed : null);
+    } else {
+      setDetectedCommand(null);
+    }
+  }
+
+  function importDetectedCommand() {
+    if (!detectedCommand) {
+      return;
+    }
+
+    let method = null;
+    if (detectedCommand.method !== null && detectedCommand.method !== undefined) {
+      if (Object.prototype.hasOwnProperty.call(RequestMethod, detectedCommand.method)) {
+        method = RequestMethod[detectedCommand.method];
+      } else {
+        enqueueSnackbar(t('jobs.curlImport.unsupportedMethod', { method: detectedCommand.method }), { variant: 'error' });
+        return;
+      }
+    }
+
+    applyImportedCommand({
+      url: detectedCommand.url,
+      method,
+      headers: detectedCommand.headers,
+      body: detectedCommand.body,
+      auth: detectedCommand.auth,
+      schedule: detectedCommand._schedule || null,
+    });
+    setDetectedCommand(null);
+  }
+
+  function urlMutator(url) {
+    if (typeof(url) == 'string' || url instanceof String) {
+      if (url.startsWith('http://http://') || url.startsWith('http://https://')) {
+        url = url.substring(7);
+      }
+    }
+    return url;
+  }
+
+  function applyImportedCommand({ url, method, headers, body, auth, schedule: importedSchedule }) {
+    if (url) updateUrl(url);
+    if (method !== null && method !== undefined) setRequestMethod(method);
+    setJobHeaders((headers || []).map(x => ({...x, uuid: newHeaderId()})));
+
+    const nextBody = body === null || body === undefined ? '' : body;
+    setRequestBody(nextBody);
+    analyzeBody(nextBody);
+    if (requestBodyRef.current) requestBodyRef.current.value = nextBody;
+
+    if (auth) {
+      setAuthEnable(true);
+      setAuthUser(auth.user || '');
+      setAuthPassword(auth.password || '');
+      if (authUserRef.current) authUserRef.current.value = auth.user || '';
+      if (authPasswordRef.current) authPasswordRef.current.value = auth.password || '';
+    }
+
+    if (importedSchedule) {
+      setScheduleOverride(importedSchedule);
+      setScheduleKey(k => k + 1);
+    }
+
+    setTabValue('common');
+    setShowCurlImport(false);
+
+    const parts = [];
+    if (url) parts.push(t('jobs.curlImport.appliedParts.url'));
+    if (method !== null && method !== undefined) parts.push(t('jobs.curlImport.appliedParts.method'));
+    if (headers && headers.length > 0) parts.push(t('jobs.curlImport.appliedParts.headers', { count: headers.length }));
+    if (body) parts.push(t('jobs.curlImport.appliedParts.body'));
+    if (auth) parts.push(t('jobs.curlImport.appliedParts.auth'));
+    if (importedSchedule) parts.push(t('jobs.curlImport.appliedParts.schedule'));
+    enqueueSnackbar(t('jobs.curlImport.applied', { parts: parts.join(', ') }), { variant: 'success' });
+  }
 
   const HEADERS_COLUMNS = [
     {
@@ -311,6 +608,10 @@ export default function JobEditor({ match }) {
         size='small'
         defaultValue={item.value}
         onBlur={({target}) => updateHeaderValue(rowNo, target.value)}
+        InputProps={{ endAdornment: <InputAdornment position='end'>
+            <VariableMenu />
+          </InputAdornment>
+        }}
         fullWidth />
     },
     {
@@ -330,11 +631,12 @@ export default function JobEditor({ match }) {
           href: '/jobs',
           text: t('common.cronjobs')
         },
+        ...folderBreadcrumb,
         createMode ? {
-          href: '/jobs/create',
+          href: urlPrefix + '/create',
           text: t('jobs.createJob')
         } : {
-          href: '/jobs/' + jobId,
+          href: urlPrefix + '/' + jobId,
           text: job.title || job.url
         }
       ]} />
@@ -347,7 +649,7 @@ export default function JobEditor({ match }) {
             {
               icon: <HistoryIcon fontSize='small' />,
               text: t('jobs.executionHistory'),
-              href: '/jobs/' + jobId + '/history'
+              href: urlPrefix + '/' + jobId + '/history'
             },
             {
               icon: <CloneIcon fontSize='small' />,
@@ -358,6 +660,11 @@ export default function JobEditor({ match }) {
               icon: <ExportIcon fontSize='small' />,
               text: t('common.export'),
               onClick: () => setShowExportJob(true)
+            },
+            {
+              icon: <StatusBadgeIcon fontSize='small' />,
+              text: t('jobs.statusBadge'),
+              onClick: () => setShowStatusBadgeDialog(true)
             },
             {
               icon: <DeleteIcon fontSize='small' />,
@@ -379,6 +686,7 @@ export default function JobEditor({ match }) {
       indicatorColor="primary"
       textColor="primary">
       <Tab label={t('jobs.common')} icon={<AlarmIcon />} value='common' />
+      <Tab label={t('jobs.notifications')} icon={<NotificationsIcon />} value='notifications' />
       <Tab label={t('jobs.advanced')} icon={<TuneIcon />} value='advanced' />
     </Tabs>
     <div hidden={tabValue!=='common'} className={classes.tabPanel}>
@@ -392,16 +700,56 @@ export default function JobEditor({ match }) {
             fullWidth
             />
           <ValidatingTextField
+            key={urlFieldKey}
             label={t('jobs.url')}
+            mutator={urlMutator}
             defaultValue={jobURL}
             pattern={RegexPatterns.url}
             patternErrorText={t('jobs.invalidUrl')}
+            onChange={({target}) => detectCommandInUrl(target.value)}
             onBlur={({target}) => setJobURL(target.value.trim())}
             inputRef={jobURLRef}
             InputLabelProps={{shrink: true}}
+            InputProps={{ endAdornment: <InputAdornment position='end'>
+                <VariableMenu />
+              </InputAdornment>
+            }}
             fullWidth
             required
             />
+          {detectedCommand && <Box mb={2}>
+            <Alert severity='info'>
+              <AlertTitle>{t(detectedCommand._schedule ? 'jobs.crontabImport.title' : 'jobs.commandImport.title')}</AlertTitle>
+              <div>
+                {t(detectedCommand._schedule ? 'jobs.crontabImport.text' : 'jobs.commandImport.text')}
+              </div>
+              <Box mt={1}>
+                <Button
+                  variant='contained'
+                  size='small'
+                  color='default'
+                  startIcon={<CodeIcon />}
+                  onClick={() => importDetectedCommand()}>
+                  {t('jobs.commandImport.import')}
+                </Button>
+              </Box>
+            </Alert>
+          </Box>}
+          {folders && folders.length > 0 && <div>
+            <InputLabel shrink id='folder-label'>
+              {t('jobs.folder')}
+            </InputLabel>
+            <Select
+              value={folders ? jobFolderId : ''}
+              onChange={({target}) => setJobFolderId(target.value)}
+              labelId='folder-label'
+              startAdornment={<InputAdornment position='start'><FolderIcon /></InputAdornment>}
+              fullWidth>
+                <MenuItem value={0}>-</MenuItem>
+              {folders.map(folder =>
+                <MenuItem value={folder.folderId} key={folder.folderId}>{folder.title}</MenuItem>)}
+            </Select>
+          </div>}
           <FormControlLabel
             control={<Switch
               checked={jobEnabled}
@@ -420,9 +768,13 @@ export default function JobEditor({ match }) {
 
         <fieldset className={classes.fieldSet}>
           <FormLabel component='legend'>{t('jobs.executionSchedule')}</FormLabel>
-          <JobSchedule initialSchedule={job.schedule || {}} onChange={sched => setSchedule(sched)} />
+          <JobSchedule key={scheduleKey} initialSchedule={scheduleOverride || job.schedule || {}} timezone={timezone} onChange={sched => setSchedule(sched)} />
         </fieldset>
+      </Paper>
+    </div>
 
+    <div hidden={tabValue!=='notifications'} className={classes.tabPanel}>
+      <Paper className={classes.paper}>
         <fieldset className={classes.fieldSet}>
           <FormLabel component='legend'>{t('jobs.notifymewhen')}</FormLabel>
           <FormGroup>
@@ -433,6 +785,20 @@ export default function JobEditor({ match }) {
                 />}
               label={t('jobs.notifyOn.onFailure')}
               />
+            <Box ml={'3rem'} mb={1}>
+              <ValidatingTextField
+                label={t('jobs.notifyOnFailureRequiredTimes')}
+                defaultValue={notification.onFailureCount}
+                onChange={({target}) => setNotification(x => ({...x, onFailureCount: Math.max(1, parseInt(target.value))}))}
+                validator={val => parseInt(val) >= 1}
+                InputLabelProps={{shrink: true}}
+                inputProps={{min: 1, type: 'number'}}
+                InputProps={{
+                  endAdornment: <InputAdornment position='end'>{t('jobs.notifyOnFailureFailures', { count: notification.onFailureCount })}</InputAdornment>
+                }}
+                size='small'
+                />
+            </Box>
             <FormControlLabel
               control={<Switch
                 checked={notification.onSuccess}
@@ -447,7 +813,102 @@ export default function JobEditor({ match }) {
                 />}
               label={t('jobs.notifyOn.onDisable')}
               />
+            <FormControlLabel
+              control={<Switch
+                checked={notification.onSslCertExpiry}
+                onChange={({target}) => setNotification(x => ({...x, onSslCertExpiry: target.checked}))}
+                />}
+              label={t('jobs.notifyOn.onSslCertExpiry')}
+              />
+            <Box ml={'3rem'} mb={1}>
+              <ValidatingTextField
+                key={`ssl-cert-expiry-days-${jobId}`}
+                label={t('jobs.notifyOnSslCertExpiryLeadTime')}
+                defaultValue={Math.round(notification.onSslCertExpirySeconds / 86400)}
+                onChange={({target}) => setNotification(x => ({
+                  ...x,
+                  onSslCertExpirySeconds: Math.max(0, parseInt(target.value, 10) || 0) * 86400
+                }))}
+                validator={val => parseInt(val, 10) >= 0}
+                InputLabelProps={{shrink: true}}
+                inputProps={{min: 0, type: 'number'}}
+                InputProps={{
+                  endAdornment: <InputAdornment position='end'>{t('jobs.notifyOnSslCertExpiryDays', { count: Math.round(notification.onSslCertExpirySeconds / 86400) })}</InputAdornment>
+                }}
+                size='small'
+                />
+            </Box>
           </FormGroup>
+        </fieldset>
+
+        <fieldset className={classes.fieldSet}>
+          <FormLabel component='legend'>{t('jobs.notifyVia')}</FormLabel>
+          <RadioGroup
+            value={String(notification.mode != null ? notification.mode : JobNotificationMode.ALL)}
+            onChange={({target}) => setNotification(x => ({
+              ...x,
+              mode: parseInt(target.value, 10)
+            }))}
+          >
+            <FormControlLabel
+              value={String(JobNotificationMode.ALL)}
+              control={<Radio color='primary' />}
+              label={t('jobs.notificationMode.all')}
+            />
+            {!notificationChannelsLoading
+              && (notification.mode == null || notification.mode === JobNotificationMode.ALL)
+              && notificationChannels.some(channel => !channel.enabled) && (
+              <Typography variant='caption' color='textSecondary' className={classes.channelHint} component='div'>
+                {t('jobs.notificationChannels.disabledNote')}{' '}
+                <MuiLink component={RouterLink} to='/settings'>{t('jobs.notificationChannels.manageInSettings')}</MuiLink>
+              </Typography>
+            )}
+            <FormControlLabel
+              value={String(JobNotificationMode.SELECTED)}
+              control={<Radio color='primary' />}
+              label={t('jobs.notificationMode.selected')}
+            />
+            {notification.mode === JobNotificationMode.SELECTED && (
+              notificationChannelsLoading ? (
+                <Box className={classes.channelHint}>
+                  <LinearProgress />
+                </Box>
+              ) : notificationChannels.length === 0 ? (
+                <Typography variant='body2' color='textSecondary' className={classes.channelHint}>
+                  {t('jobs.notificationChannels.noChannels')}{' '}
+                  <MuiLink component={RouterLink} to='/settings'>{t('jobs.notificationChannels.manageInSettings')}</MuiLink>
+                </Typography>
+              ) : (
+                <FormGroup className={classes.channelList}>
+                  {notificationChannels.map(channel => (
+                    <FormControlLabel
+                      key={channel.channelId}
+                      control={<Checkbox
+                        color='primary'
+                        checked={(notification.selectedChannels || []).includes(channel.channelId)}
+                        onChange={({target}) => toggleSelectedChannel(channel.channelId, target.checked)}
+                      />}
+                      label={channelLabel(channel)}
+                    />
+                  ))}
+                  <Typography variant='caption' color='textSecondary'>
+                    {(notification.selectedChannels || []).some(id => {
+                      const channel = notificationChannels.find(c => c.channelId === id);
+                      return channel && !channel.enabled;
+                    }) && <>
+                      {t('jobs.notificationChannels.disabledNote')}{' '}
+                    </>}
+                    <MuiLink component={RouterLink} to='/settings'>{t('jobs.notificationChannels.manageInSettings')}</MuiLink>
+                  </Typography>
+                </FormGroup>
+              )
+            )}
+            <FormControlLabel
+              value={String(JobNotificationMode.NONE)}
+              control={<Radio color='primary' />}
+              label={t('jobs.notificationMode.none')}
+            />
+          </RadioGroup>
         </fieldset>
       </Paper>
     </div>
@@ -470,6 +931,7 @@ export default function JobEditor({ match }) {
             defaultValue={authUser}
             disabled={!authEnable}
             onBlur={({target}) => setAuthUser(target.value)}
+            inputRef={authUserRef}
             InputLabelProps={{shrink: true}}
             fullWidth
             />
@@ -479,6 +941,7 @@ export default function JobEditor({ match }) {
             type='password'
             disabled={!authEnable}
             onBlur={({target}) => setAuthPassword(target.value)}
+            inputRef={authPasswordRef}
             InputLabelProps={{shrink: true}}
             fullWidth
             />
@@ -494,11 +957,12 @@ export default function JobEditor({ match }) {
               columns={HEADERS_COLUMNS}
               items={jobHeaders}
               empty={<em>{t('jobs.noheaders')}</em>}
+              rowIdentifier='uuid'
               noHeader
               />
           </TableContainer>
 
-          <Grid container direction='row' justify='flex-end'>
+          <Grid container direction='row' justifyContent='flex-end'>
             <Grid item>
               <Button
                 variant="contained"
@@ -537,16 +1001,36 @@ export default function JobEditor({ match }) {
                   <MenuItem value={RequestMethod[method]} key={method}>{method}</MenuItem>)}
               </Select>
             </FormControl>
+            {showContentTypeNote && <Box>
+              <Alert severity='info'>
+                <AlertTitle>{t('jobs.jsonNote.title')}</AlertTitle>
+                <div>
+                  {t('jobs.jsonNote.text')}
+                </div>
+                <Box mt={1}>
+                  <Button
+                    variant='contained'
+                    size='small'
+                    color='default'
+                    startIcon={<ApplyIcon />}
+                    onClick={() => setJobHeaders(x => [...x, {key: 'Content-Type', value: 'application/json', uuid: newHeaderId()}])}>
+                    {t('jobs.jsonNote.setContentType')}
+                  </Button>
+                </Box>
+              </Alert>
+            </Box>}
             <FormControl className={classes.formControl}>
               <TextField
                 label={t('jobs.requestBody')}
                 className={classes.requestBody}
                 defaultValue={requestBody}
                 onBlur={({target}) => setRequestBody(target.value)}
+                onChange={({target}) => analyzeBody(target.value)}
                 disabled={!RequestMethodsSupportingCustomBody.includes(requestMethod)}
+                inputRef={requestBodyRef}
                 multiline
-                rows={8}
-                rowsMax={8}
+                minRows={8}
+                maxRows={8}
                 InputLabelProps={{shrink: true}}
                 fullWidth
                 />
@@ -564,6 +1048,17 @@ export default function JobEditor({ match }) {
                   endAdornment: <InputAdornment position='end'>{t('units.long.s')}</InputAdornment>
                 }}
                 inputProps={{min: 1, max: maxRequestTimeout, type: 'number'}}
+                patternErrorText={t('jobs.invalidTimeout', {maxRequestTimeout})}
+                inputRef={requestTimeoutRef}
+                />
+            </FormControl>
+            <FormControl className={classes.formControl}>
+              <FormControlLabel
+                control={<Switch
+                  checked={redirectSuccess}
+                  onChange={({target}) => setRedirectSuccess(target.checked)}
+                  />}
+                label={t('jobs.redirectSuccess')}
                 />
             </FormControl>
           </FormGroup>
@@ -571,29 +1066,48 @@ export default function JobEditor({ match }) {
       </Paper>
     </div>
 
-    <Grid container direction='row' justify='flex-end' spacing={1}>
+    <Grid container direction='row' justifyContent='space-between' spacing={1}>
       <Grid item>
         <Button
-          startIcon={<TestIcon />}
-          onClick={() => setShowTestRun(true)}>
-          {t('jobs.testRun.testRun')}
+          startIcon={<CodeIcon />}
+          onClick={() => setShowCurlImport(true)}>
+          {t('jobs.curlImport.button')}
         </Button>
       </Grid>
       <Grid item>
-        <Button
-          variant='contained'
-          color='primary'
-          startIcon={saving ? <CircularProgress size='small' /> : <SaveIcon />}
-          onClick={() => saveJob()}
-          disabled={saving}>
-          {createMode ? t('common.create') : t('common.save')}
-        </Button>
+        <Grid container direction='row' justifyContent='flex-end' spacing={1}>
+          <Grid item>
+            <Button
+              startIcon={<TestIcon />}
+              onClick={() => setShowTestRun(true)}>
+              {t('jobs.testRun.testRun')}
+            </Button>
+          </Grid>
+          <Grid item>
+            <Button
+              variant='contained'
+              color='primary'
+              startIcon={saving ? <CircularProgress size='small' /> : <SaveIcon />}
+              onClick={() => saveJob()}
+              disabled={saving}>
+              {createMode ? t('common.create') : t('common.save')}
+            </Button>
+          </Grid>
+        </Grid>
       </Grid>
     </Grid>
 
-    {showTestRun && <JobTestRun onClose={() => setShowTestRun(false)} jobId={jobId} job={updatedJob} />}
+    {showTestRun && <JobTestRun onClose={() => setShowTestRun(false)} onUpdateUrl={updateUrl} jobId={jobId} job={updatedJob} />}
 
     {showExportJob && <JobExport onClose={() => setShowExportJob(false)} job={updatedJob} />}
+
+    <CurlImportDialog
+      open={showCurlImport}
+      onClose={() => setShowCurlImport(false)}
+      onImport={applyImportedCommand}
+      />
+
+    {showStatusBadgeDialog && <JobStatusBadgeDialog onClose={() => setShowStatusBadgeDialog(false)} jobId={jobId} job={updatedJob} />}
 
     {showDeleteJob && <Dialog open={true} onClose={() => setShowDeleteJob(false)}>
       <DialogTitle>

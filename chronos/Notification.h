@@ -18,15 +18,17 @@ namespace Chronos
 {
 	enum NotificationType_t
 	{
-		NOTIFICATION_TYPE_FAILURE	= 0,
-		NOTIFICATION_TYPE_SUCCESS	= 1,
-		NOTIFICATION_TYPE_DISABLE	= 2
+		NOTIFICATION_TYPE_FAILURE		= 0,
+		NOTIFICATION_TYPE_SUCCESS		= 1,
+		NOTIFICATION_TYPE_DISABLE		= 2,
+		NOTIFICATION_TYPE_SSL_CERT_EXPIRY	= 3
 	};
 
 	struct Notification
 	{
 		int userID = 0;
 		int jobID = 0;
+		int jobLogID = 0;
 		uint64_t date = 0;			// in ms
 		uint64_t dateStarted = 0;	// in ms
 		uint64_t datePlanned = 0;	// in ms
@@ -37,6 +39,9 @@ namespace Chronos
 		std::string statusText;
 		int httpStatus = 0;
 		int failCounter = 0;
+		uint64_t sslCertExpiry = 0;	// in s, for SSL_CERT_EXPIRY notifications
+		int notificationMode = 1; // 0=none, 1=all, 2=selected
+		std::string selectedNotificationChannels; // comma-separated channel IDs
 	};
 };
 

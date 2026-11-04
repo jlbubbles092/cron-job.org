@@ -1,7 +1,11 @@
 {
+  "paddleLocale": "de",
+  "landingLocale": "de",
   "common": {
+    "help": "Hilfe",
     "menu": "Menü",
-    "followontwitter": "Twitter",
+    "contact": "Kontakt",
+    "followontwitter": "X",
     "forkongithub": "GitHub",
     "blog": "Blog",
     "logout": "Logout",
@@ -57,7 +61,18 @@
     "massActionSucceeded": "Die Aktion wurde erfolgreich ausgeführt.",
     "massActionFailed": "Die Aktion konnte nicht ausgeführt werden. Bitte versuchen Sie es später erneut.",
     "sustainingMemberThanks": "Sie sind ein aktives Fördermitglied - vielen Dank, dass Sie uns unterstützen und diesen Dienst am Leben erhalten!",
-    "export": "Exportieren"
+    "export": "Exportieren",
+    "confirmMassDeleteTitle": "Ausgewähltes Element löschen",
+    "confirmMassDeleteTitle_plural": "{{count}} ausgewählte Elemente löschen",
+    "confirmMassDeleteText": "Wollen Sie das ausgewählte Element wirklich löschen?",
+    "confirmMassDeleteText_plural": "Wollen Sie die {{count}} ausgewählten Elemente wirklich löschen?",
+    "selectAll": "Alles auswählen",
+    "deselectAll": "Auswahl aufheben",
+    "requestDeniedForSecurityReasons": "Entschuldigung, aber wir konnten Ihre Anforderung nicht verarbeiten. Möglicher Grund ist ein nicht wohlgeformter Job. Wenden Sie sich bei Fragen bitte an unser Support-Team.",
+    "clipboardCopySuccess": "Erfolgreich in die Zwischenablage kopiert.",
+    "clipboardCopyFailed": "Entschuldigung, aber wir konnten die Daten nicht in die Zwischenablage kopieren.",
+    "copyToClipboard": "In die Zwischenablage kopieren",
+    "oops": "Hoppla..."
   },
   "login": {
     "emailAddress": "E-Mail-Adresse",
@@ -79,7 +94,10 @@
     "resetPasswordText": "Bitte vergeben Sie ein neues Passwort für Ihren Account und bestätigen Sie es, dann klicken Sie \"Passwort zurücksetzen\".",
     "mfaTitle": "Multi-Faktor-Authentifizierung",
     "mfaText": "Bitte geben Sie einen MFA-Code eines Gerätes ein, das mit Ihrem Account verbunden ist.",
-    "mfaCode": "MFA-Code"
+    "mfaCode": "MFA-Code",
+    "resendActivationMail": "Aktivierungs-Mail erneut senden",
+    "resendSuccess": "Erledigt",
+    "resendFailed": "Fehler - später erneut versuchen"
   },
   "signup": {
     "signup": "Registrieren",
@@ -87,6 +105,7 @@
     "repeatPassword": "Passwort (wiederholen)",
     "passwordsDontMatch": "Die Passwörter stimmen nicht überein.",
     "recaptchaError": "Entschuldigung, aber wir konnten Ihre Registrierung nicht bestätigen. Wenn Sie dies für einen Fehler halten, kontaktieren Sie bitte unser Support-Team.",
+    "turnstileRetry": "Erneut versuchen",
     "createAccount": "Account erstellen",
     "signupError": "Bei der Erstellung Ihres Accounts ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut.",
     "signupConflict": "Es gibt bereits einen Account mit dieser E-Mail-Adresse. Bitte verwenden Sie eine andere E-Mail-Adresse oder loggen Sie sich in Ihren bestehenden Account ein.",
@@ -103,6 +122,13 @@
     "disabledJobs": "deaktivierte Cronjobs",
     "successfulJobs": "erfolgreiche Cronjobs",
     "failedJobs": "fehlgeschlagene Cronjobs",
+    "nextRuns": "Nächste Ausführungen",
+    "noUpcoming": "Keine anstehenden Ausführungen.",
+    "expiringCerts": "Bald ablaufende Zertifikate",
+    "noExpiringCerts": "In den nächsten 14 Tagen läuft kein Zertifikat ab.",
+    "certExpiryDate": "Läuft ab am",
+    "failedJobsList": "Fehlgeschlagene Cronjobs",
+    "noFailedJobs": "Keine fehlgeschlagenen Cronjobs.",
     "likeService": "Finden Sie {{serviceName}} nützlich?",
     "donateText": "Helfen Sie uns mit einer Spende in beliebiger Höhe, {{serviceName}} werbefrei und kostenlos zu halten. {{serviceName}} ist ein reines Non-Profit-Projekt und Ihre Spenden werden ausschließlich für die Weiterentwicklung und die Server-Kosten verwendet. Vielen Dank für Ihre Unterstützung!",
     "newsletterTitle": "{{serviceName}}-Newsletter",
@@ -111,15 +137,31 @@
     "subscribe": "Abonnieren",
     "failedToSaveNewsletter": "Entschuldigung, aber wir konnten Ihre Entscheidung gerade nicht speichern. Bitte versuchen Sie es später erneut.",
     "newsletterSaved": "Vielen Dank, wir haben Ihre Newsletter-Einstellung gespeichert.",
-    "sustainingMembershipText": "Finden Sie {{serviceName}} nützlich? Möchten Sie uns unterstützen und gleichzeitig von exklusiven Vorteilen profitieren? Werden Sie ein Fördermitglied! Mit Ihrer Fördermitgliedschaft leisten Sie einen Beitrag zu unseren Infrastrukturkosten und helfen uns, unseren Dienst zuverlässig, skalierbar und werbefrei zu halten und kontinuierlich weiterzuentwickeln."
+    "sustainingMembershipText": "Finden Sie {{serviceName}} nützlich? Möchten Sie uns unterstützen und gleichzeitig von exklusiven Vorteilen profitieren? Werden Sie ein Fördermitglied! Mit Ihrer Fördermitgliedschaft leisten Sie einen Beitrag zu unseren Infrastrukturkosten und helfen uns, unseren Dienst zuverlässig, skalierbar und werbefrei zu halten und kontinuierlich weiterzuentwickeln.",
+    "bounceWarning": {
+      "title": "Wir konnten Sie nicht erreichen...",
+      "text": "Unsere letzten Versuche, Benachrichtigungen an Ihre im Profil hinterlegte E-Mail-Adresse zu senden, sind leider fehlgeschlagen. Wir werden daher nunmehr nicht mehr versuchen, neue Benachrichtigungen zu senden. Bitte stellen Sie sicher, dass Ihre E-Mail-Adresse im Profil korrekt angegeben ist und aktualisieren Sie diese gegebenenfalls. Sie können Benachrichtigungen auch hier reaktivieren. Bitte beachten Sie jedoch, dass wir die Benachrichtigungen ggf. erneut deaktivieren, wenn E-Mails weiterhin nicht zugestellt werden können.",
+      "updateProfile": "Profil aktualisieren",
+      "reenable": "Benachrichtigungen reaktivieren",
+      "reenableFailed": "Wir konnten Ihre Benachrichtigungen gerade nicht reaktivieren. Bitte versuchen Sie es später erneut.",
+      "reenableSuccess": "Wir haben Ihre Benachrichtigungen reaktiviert."
+    }
   },
   "events": {
     "cronjobExecution": "Cronjob-Ausführung: {{statusText}}",
     "notificationSent": "Benachrichtigung gesendet: {{notificationType}}",
+    "notificationFailed": "Benachrichtigung fehlgeschlagen: {{notificationType}}",
+    "channelDestination": "{{channel}} · {{destination}}",
+    "channels": {
+      "email": "E-Mail",
+      "webhook": "Webhook",
+      "unknown": "Kanal"
+    },
     "notifications": {
       "FAILURE": "Ausführung fehlgeschlagen",
       "SUCCESS": "Ausführung erfolgreich",
-      "DISABLE": "Cronjob deaktiviert"
+      "DISABLE": "Cronjob deaktiviert",
+      "SSL_CERT_EXPIRY": "SSL-Zertifikat läuft ab"
     }
   },
   "units": {
@@ -133,6 +175,7 @@
     }
   },
   "jobs": {
+    "allJobs": "Alle",
     "nojobs": "Keine Jobs gefunden.",
     "titleurl": "Titel, URL",
     "lastExecution": "Letzte Ausführung",
@@ -141,10 +184,16 @@
     "history": "Verlauf",
     "nohistory": "Keine Verlaufs-Einträge gefunden.",
     "status": "Status",
+    "sslCertExpiry": "TLS-Zertifikat läuft ab am {{expiryDate}}",
     "executed": "Ausgeführt",
     "scheduled": "Geplant",
     "jitter": "Jitter",
     "duration": "Dauer",
+    "jsonNote": {
+      "title": "Senden Sie JSON-Daten?",
+      "text": "In den meisten Fällen ist es erforderlich, für korrekte Funktion einen entsprechenden Content-Type-Header zu setzen.",
+      "setContentType": "Content-Type-Header jetzt hinzufügen"
+    },
     "statuses": {
       "OK": "Erfolgreich",
       "UNKNOWN": "Unbekannt",
@@ -155,7 +204,36 @@
       "FAILED_SIZE": "Fehlgeschlagen (Ausgabe zu groß)",
       "FAILED_URL": "Fehlgeschlagen (ungültige URL)",
       "FAILED_INTERNAL": "Fehlgeschlagen (interner Fehler)",
-      "FAILED_OTHERS": "Fehlgeschlagen"
+      "FAILED_OTHERS": "Fehlgeschlagen",
+      "FAILED_CHALLENGEPAGE": "Fehlgeschlagen (Challenge-Seite)"
+    },
+    "statusExplanations": {
+      "modes": {
+        "FAILED_HTTPERROR": "Der Server hat mit einem HTTP-Fehler geantwortet. Öffnen Sie die Details der Ausführung, um den genauen Status-Code und dessen Bedeutung zu sehen.",
+        "FAILED_DNS": "Der Hostname in der URL konnte nicht aufgelöst werden. Prüfen Sie, ob die Domain korrekt geschrieben ist und noch existiert.",
+        "FAILED_CONNECT": "Es konnte keine Verbindung zum Server hergestellt werden. Der Server ist möglicherweise nicht erreichbar oder eine Firewall blockiert Anfragen von unseren Servern.",
+        "FAILED_TIMEOUT": "Der Server hat nicht innerhalb des konfigurierten Timeouts vollständig geantwortet. Erhöhen Sie das Timeout in den erweiterten Einstellungen des Jobs oder prüfen Sie, warum der Endpunkt langsam ist.",
+        "FAILED_SIZE": "Die Antwort war größer als das erlaubte Limit und wurde abgebrochen. Lassen Sie den Endpunkt weniger Daten zurückgeben.",
+        "FAILED_URL": "Die URL konnte nicht verarbeitet werden. Bitte prüfen Sie sie auf Tippfehler und stellen Sie sicher, dass sie mit http:// oder https:// beginnt.",
+        "FAILED_INTERNAL": "Beim Ausführen des Jobs ist ein interner Fehler aufgetreten. Falls dies wiederholt auftritt, kontaktieren Sie bitte unser Support-Team.",
+        "FAILED_OTHERS": "Die Anfrage ist aus einem nicht näher bestimmten Grund fehlgeschlagen.",
+        "FAILED_CHALLENGEPAGE": "Diese URL hat eine Bot-Challenge-Seite statt der erwarteten Antwort zurückgegeben. Bitten Sie Ihren Webhoster, {{serviceName}} freizugeben, oder deaktivieren Sie den Bot-Schutz für diese URL."
+      },
+      "http": {
+        "3xx": "Der Server hat eine Weiterleitung zurückgegeben. Weiterleitungen werden standardmäßig als Fehler gewertet — Sie können in den erweiterten Einstellungen \"Weiterleitungen als Erfolg werten\" aktivieren oder den Job direkt auf das Weiterleitungsziel richten.",
+        "4xx": "Der Server hat die Anfrage abgelehnt (Client-Fehler). Prüfen Sie URL, Anfrage-Methode, Header, Body und eine eventuell erforderliche Authentifizierung.",
+        "5xx": "Auf dem Server ist ein Fehler aufgetreten (Server-Fehler). Dies liegt in der Regel am Zielserver und löst sich oft von selbst.",
+        "400": "Bad Request: Der Server konnte die Anfrage nicht verarbeiten. Prüfen Sie Body, Header und Methode der Anfrage.",
+        "401": "Unauthorized: Der Endpunkt erfordert eine Authentifizierung. Fügen Sie die nötigen Zugangsdaten oder einen Authorization-Header hinzu.",
+        "403": "Forbidden: Der Server hat die Anfrage abgelehnt. Der Endpunkt blockiert möglicherweise automatisierte Anfragen oder erfordert eine Authentifizierung.",
+        "404": "Not Found: Die angeforderte URL existiert auf dem Server nicht. Prüfen Sie die URL auf Tippfehler.",
+        "405": "Method Not Allowed: Der Endpunkt akzeptiert diese HTTP-Methode nicht. Versuchen Sie eine andere Anfrage-Methode.",
+        "429": "Too Many Requests: Der Server drosselt Ihre Anfragen. Reduzieren Sie ggf. die Ausführungshäufigkeit des Jobs.",
+        "500": "Internal Server Error: Auf dem Zielserver ist bei der Verarbeitung der Anfrage etwas schiefgelaufen.",
+        "502": "Bad Gateway: Ein dem Zielserver vorgelagerter Server hat eine ungültige Antwort zurückgegeben.",
+        "503": "Service Unavailable: Der Server kann die Anfrage vorübergehend nicht bearbeiten, z. B. wegen Überlastung oder Wartung.",
+        "504": "Gateway Timeout: Ein dem Zielserver vorgelagerter Server hat nicht rechtzeitig geantwortet."
+      }
     },
     "fetchedUrl": "Abgerufene URL",
     "responseHeaders": "Antwort-Header",
@@ -167,7 +245,28 @@
     "notifyOn": {
       "onFailure": "die Ausführung des Cronjobs fehlschlägt",
       "onSuccess": "die Ausführung des Cronjobs erfolgreich ist nachdem sie zuvor fehlschlug",
-      "onDisable": "der Cronjob automatisch wegen zu vieler Fehlschläge deaktiviert wird"
+      "onDisable": "der Cronjob automatisch wegen zu vieler Fehlschläge deaktiviert wird",
+      "onSslCertExpiry": "das TLS-Zertifikat des Servers bald abläuft"
+    },
+    "notifyOnFailureRequiredTimes": "Benachrichtigung nach",
+    "notifyOnFailureFailures": "Fehlschlag",
+    "notifyOnFailureFailures_plural": "aufeinanderfolgenden Fehlschlägen",
+    "notifyOnSslCertExpiryLeadTime": "Benachrichtigung vor Ablauf",
+    "notifyOnSslCertExpiryDays": "Tag",
+    "notifyOnSslCertExpiryDays_plural": "Tage",
+    "notifyVia": "Benachrichtigen über...",
+    "notificationMode": {
+      "all": "alle Benachrichtigungskanäle",
+      "selected": "nur ausgewählte Kanäle",
+      "none": "keine Kanäle"
+    },
+    "notificationChannels": {
+      "noChannels": "Noch keine Benachrichtigungskanäle konfiguriert.",
+      "manageInSettings": "Kanäle in den Einstellungen verwalten.",
+      "accountEmail": "Konto-E-Mail",
+      "pendingConfirmation": "Bestätigung ausstehend",
+      "disabled": "deaktiviert",
+      "disabledNote": "Deaktivierte Kanäle empfangen keine Benachrichtigungen."
     },
     "requireshttpauth": "Erfordert HTTP-Authentifizierung",
     "username": "Benutzername",
@@ -188,7 +287,10 @@
       "months": "Monate",
       "hours": "Stunden",
       "minutes": "Minuten",
-      "minutesSmall": "Minute(n)",
+      "minutesSmall": "Minute",
+      "minutesSmall_plural": "Minuten",
+      "hoursSmall": "Stunde",
+      "hoursSmall_plural": "Stunden",
       "every": "Alle",
       "every2": "Jeden",
       "everydayat": "Jeden Tag um",
@@ -196,7 +298,10 @@
       "at": "um",
       "ofthemonthat": "des Monats um",
       "custom": "Benutzerdefiniert",
-      "noExecutionsWarning": "Es konnten keine Ausführungen bestimmt werden. Bitte stellen Sie sicher, dass Sie mindestens einen Eintrag pro Feld ausgewählt haben."
+      "noExecutionsWarning": "Es konnten keine Ausführungen bestimmt werden. Bitte stellen Sie sicher, dass Sie mindestens einen Eintrag pro Feld ausgewählt haben.",
+      "expires": "Terminplan läuft ab",
+      "expiresAt": "am",
+      "jobTimezoneNote": "In der Zeitzone dieses Jobs ({{timezone}})."
     },
     "headers": "Header",
     "common": "Allgemein",
@@ -208,6 +313,8 @@
     "enableJob": "Job aktivieren",
     "saveResponses": "Antwort-Daten in Job-Verlauf speichern",
     "timezone": "Zeitzone",
+    "localTimezone": "Lokale Zeitzone",
+    "jobTimezone": "Job-Zeitzone",
     "editJob": "Cronjob bearbeiten",
     "editJobHeading": "Cronjob bearbeiten: {{jobTitle}}",
     "jobHistoryHeading": "Ausführungs-Verlauf: {{jobTitle}}",
@@ -232,9 +339,38 @@
     "failedToClone": "Cronjob konnte nicht geklont werden. Bitte versuchen Sie es später erneut.",
     "cloned": "Der Cronjob wurde erfolgreich geklont. Bitte aktivieren Sie den Job, sobald er ausgeführt werden soll.",
     "invalidUrl": "Diese URL scheint nicht gültig zu sein.",
+    "invalidTimeout": "Der Timeout-Wert ist ungültig. Der maximale Timeout-Wert beträgt {{maxRequestTimeout}} Sekunden.",
     "failedToCreate": "Der Cronjob konnte nicht erstellt werden. Bitte versuchen Sie es später erneut.",
     "created": "Der Cronjob wurde erfolgreich erstellt.",
     "cantDeleteMonitorJob": "Dieser Job wird für einen oder mehrere Status-Monitore verwendet und kann daher nicht gelöscht werden. Bitte entfernen Sie zuerst den zugehörigen Status-Monitor.",
+    "curlImport": {
+      "button": "cURL-Befehl importieren",
+      "title": "cURL-Befehl importieren",
+      "help": "Fügen Sie einen cURL- oder wget-Befehl oder eine vollständige Crontab-Zeile ein. Wir füllen daraus die Felder für URL, Anfrage-Methode, Header, Anfrage-Body, Authentifizierung und Ausführungsplan aus.",
+      "command": "Befehl oder Crontab-Zeile",
+      "import": "Importieren",
+      "parseError": "Wir konnten in Ihrer Eingabe keinen cURL-/wget-Befehl oder keine Crontab-Zeile erkennen. Bitte stellen Sie sicher, dass er mit 'curl' oder 'wget' beginnt (optional mit Cron-Zeitplan davor) und eine URL enthält.",
+      "unsupportedMethod": "Die Anfrage-Methode '{{method}}' wird nicht unterstützt. Bitte wählen Sie eine unterstützte Methode manuell aus.",
+      "applied": "Importiert: {{parts}}.",
+      "appliedParts": {
+        "url": "URL",
+        "method": "Anfrage-Methode",
+        "headers": "{{count}} Header",
+        "headers_plural": "{{count}} Header",
+        "body": "Anfrage-Body",
+        "auth": "Authentifizierung",
+        "schedule": "Ausführungsplan"
+      }
+    },
+    "commandImport": {
+      "title": "Das sieht nach einem cURL- oder wget-Befehl aus",
+      "text": "Statt ihn als URL zu verwenden, können wir daraus die URL, die Anfrage-Methode, Header, den Anfrage-Body und die Authentifizierung auslesen.",
+      "import": "Befehl importieren"
+    },
+    "crontabImport": {
+      "title": "Das sieht nach einer Crontab-Zeile aus",
+      "text": "Wir können daraus den Ausführungsplan sowie die URL, die Anfrage-Methode, Header, den Anfrage-Body und die Authentifizierung auslesen."
+    },
     "testRun": {
       "testRun": "Testlauf",
       "performTestRun": "Testlauf durchführen: {{jobTitle}}",
@@ -257,15 +393,52 @@
       "response": "Antwort",
       "rawRequest": "Anfrage-Rohdaten",
       "rawResponse": "Antwort-Rohdaten",
-      "peer": "Gegenstelle"
+      "peer": "Gegenstelle",
+      "redirectNote": {
+        "title": "Weiterleitung erkannt",
+        "text": "Ihre URL scheint auf eine andere URL weiterzuleiten. {{serviceName}} folgt Weiterleitungen nicht automatisch. In den meisten Fällen kann dieses Problem einfach gelöst werden, indem die URL des Jobs auf die Ziel-URL der Weiterleitung aktualisiert wird.",
+        "target": "Ziel der Weiterleitung",
+        "updateUrl": "Job-URL aktualisieren"
+      }
     },
     "requestTimeout": "Timeout",
+    "redirectSuccess": "Weiterleitungen mit HTTP-3xx-Status-Code als erfolgreich einstufen",
     "exportJob": "Cronjob exportieren: {{jobTitle}}",
     "exportFormat": "Export-Format",
     "format": {
       "cronTabCurl": "Crontab + curl"
     },
-    "exportData": "Export-Daten"
+    "exportData": "Export-Daten",
+    "folder": "Ordner",
+    "folders": {
+      "manage": "Ordner verwalten",
+      "noFolders": "Sie haben derzeit keine Ordner.",
+      "title": "Titel",
+      "create": "Ordner erstellen",
+      "createFailed": "Der Ordner konnte nicht erstellt werden. Bitte versuchen Sie es später erneut.",
+      "titleConflict": "Ein Ordner mit diesem Titel existiert bereits.",
+      "created": "Der Ordner wurde erstellt.",
+      "saved": "Der Ordner wurde gespeichert.",
+      "edit": "Ordner bearbeiten: {{title}}",
+      "delete": "Ordner löschen: {{title}}",
+      "confirmDeleteFolder": "Möchten Sie diesen Ordner wirklich löschen? Eventuell in diesem Ordner vorhandene Jobs werden in den Haupt-Ordner verschoben.",
+      "folderDeleteFailed": "Der Ordner konnte nicht gelöscht werden. Bitte versuchen Sie es später erneut.",
+      "folderDeleted": "Der Ordner wurde gelöscht."
+    },
+    "move": "Verschieben",
+    "moveText": "Ausgewähltes Element verschieben nach:",
+    "moveText_plural": "{{count}} ausgewählte Elemente verschieben nach:",
+    "statusBadge": "Status-Badge",
+    "statusBadgeFor": "Status-Badge für: {{jobTitle}}",
+    "statusBadgeOptions": {
+      "withTitle": "Job-Titel anzeigen",
+      "withLastExecutionDate": "letzte Ausführung anzeigen",
+      "withLatency": "Dauer anzeigen"
+    },
+    "statusBadgeURL": "Badge-URL",
+    "statusBadgeMarkdown": "Markdown-Beispiel",
+    "statusBadgeURLNote": "Wenn Sie die Status-Badge-URL teilen, denken Sie daran, dass jeder im Besitz der URL den Status des Jobs sowie die anderen gewählten Informationen einsehen kann.",
+    "someFailed": "Wegen eines technischen Problem konnten wir nicht alle Ihre Cronjobs abrufen. Unser Team wurde über das Problem informiert. Bitte versuchen Sie es später erneut und kontaktieren Sie unser Support-Team, falls das Problem bestehen bleibt."
   },
   "statuspages": {
     "title": "Titel",
@@ -291,7 +464,7 @@
     "checkUptimeThresholdInput": "Verfügbarkeits-Schwellwerte müssen eine Zahl zwischen 0 und 100 sein.",
     "thresholdLatencyWarning": "Latenz-Schwellwert Warnung (ms)",
     "thresholdLatencyError": "Latenz-Schwellwert Fehler (ms)",
-    "checkLatencyThresholdInput": "Latenz-Schwellwerte müssen eine Zahl zwischen 0 und 30.000 sein.",
+    "checkLatencyThresholdInput": "Latenz-Schwellwerte müssen eine Zahl zwischen 0 und 600.000 sein.",
     "monitorUpdateFailed": "Der Status-Monitor konnte nicht gespeichert wrden. Bitte prüfen Sie Ihre Eingaben und versuchen Sie es später erneut.",
     "deleteMonitor": "Status-Monitor löschen: {{title}}",
     "confirmDeleteMonitor": "Soll dieser Status-Monitor wirklich gelöscht werden? Diese Aktion kann nicht rückgängig gemacht werden.",
@@ -333,7 +506,27 @@
     "cannotDeletePublishedPage": "Veröffentlichte Status-Seiten können nicht gelöscht werden. Bitte deaktivieren Sie zuerst die Veröffentlichung der Status-Seite.",
     "statusPageDeleteFailed": "Die Status-Seite konnte nicht gelöscht werden. Bitte versuchen Sie es später erneut.",
     "statusPageDeleted": "Die Status-Seite wurde erfolgreich gelöscht.",
-    "nostatuspages": "Keine Status-Seiten gefunden."
+    "nostatuspages": "Keine Status-Seiten gefunden.",
+    "incidents": {
+      "title": "Ereignisse",
+      "create": "Ereignis hinzufügen",
+      "edit": "Ereignis bearbeiten: {{title}}",
+      "description": "Beschreibung",
+      "startDate": "Beginn",
+      "closedDate": "Ende",
+      "status": "Status",
+      "ongoing": "Laufend",
+      "resolved": "Behoben",
+      "noIncidents": "Diese Status-Seite hat noch keine Ereignisse. Um zu beginnen, klicken Sie auf \"Ereignis hinzufügen\".",
+      "created": "Das Ereignis wurde erfolgreich erstellt.",
+      "createFailed": "Das Ereignis konnte nicht erstellt werden. Bitte versuchen Sie es später erneut.",
+      "updated": "Das Ereignis wurde erfolgreich gespeichert.",
+      "updateFailed": "Das Ereignis konnte nicht gespeichert werden. Bitte prüfen Sie Ihre Eingaben und versuchen Sie es später erneut.",
+      "delete": "Ereignis löschen: {{title}}",
+      "confirmDelete": "Soll dieses Ereignis wirklich gelöscht werden? Diese Aktion kann nicht rückgängig gemacht werden.",
+      "deleted": "Das Ereignis wurde erfolgreich gelöscht.",
+      "deleteFailed": "Das Ereignis konnte nicht gelöscht werden. Bitte versuchen Sie es später erneut."
+    }
   },
   "settings": {
     "profile": "Profil",
@@ -379,16 +572,19 @@
     "subscriptionPending": "Wir bearbeiten gerade Ihre Bestellung - bitte schauen Sie in Kürze noch einmal vorbei.",
     "subscriptionInactive": "Sie sind derzeit kein aktives Fördermitglied.",
     "subscriptionExpiring": "Ihre Fördermitgliedschaft endet am {{expiresAt}}.",
+    "subscriptionGracePeriod": "Ihre kostenlose Fördermitgliedschaftsverlängerung endet am {{expiresAt}}. Wenn Sie weiterhin Fördermitglied bleiben möchten, klicken Sie bite auf \"Fördermitglied werden\".",
     "becomeASustainingMember": "Fördermitglied werden",
     "learnMore": "Mehr erfahren",
     "sustainingMemberTeaser": "Finden Sie {{serviceName}} nützlich und möchten uns unterstützen und gleichzeitig von exklusiven Vorteilen profitieren? Werden Sie ein Fördermitglied!",
     "manageSubscriptionFailed": "Fehler beim Laden des Abo-Verwaltungs-Portals. Bitte versuchen Sie es später erneut oder kontaktieren Sie unser Support-Team.",
     "orderFailed": "Fehler beim Laden des Kaufabwicklungs-Portals. Bitte versuchen Sie es später erneut oder kontaktieren Sie unser Support-Team.",
     "manageSubscription": "Abo verwalten",
+    "updatePaymentMethod": "Zahlungsart ändern",
+    "cancelSubscription": "Abo kündigen",
     "subscribeDialog": {
       "text1": "Durch eine Fördermitgliedschaft bei {{serviceName}} unterstützen Sie uns beim Betrieb und bei der Weiterentwicklung unseres Dienstes.",
       "text2": "Als Dankeschön für Ihre Unterstützung können wir Fördermitgliedern exklusive Vorteile anbieten.",
-      "text3": "Den Betrag, mit dem Sie uns monatlich unterstützen möchten, können Sie selbst aus drei verschiedenen Möglichkeiten auswählen. Fördermitgliedschaften können monatlich gekündigt werden.",
+      "text3": "Den Betrag, mit dem Sie uns unterstützen möchten, können Sie selbst aus verschiedenen Möglichkeiten auswählen. Dabei ist monatliche oder jährliche Zahlung möglich. Fördermitgliedschaften können monatlich bzw. jährlich gekündigt werden (je nach gewähltem Zahlungsintervall).",
       "defaultMembership": "Standard-Mitgliedschaft",
       "sustainingMembership": "Fördermitgliedschaft",
       "supportService": "Unterstützung und Erhaltung unseres Dienstes",
@@ -396,14 +592,17 @@
       "maxRequestSize": "Max. Antwort-Größe",
       "maxFailures": "Max. Fehlschläge vor Job-Deaktivierung",
       "maxStatusPages": "Max. Anzahl Status-Seiten/-Monitore",
+      "maxApiCallsPerDay": "Max. API-Calls pro Tag",
+      "maxNotificationChannels": "Max. Anzahl Benachrichtigungskanäle",
       "price": "Preis",
       "free": "kostenlos",
-      "subscriptionPrices": "5, 10 oder 20 EUR pro Monat (frei wählbar)",
+      "subscriptionPrices": "5, 10 oder 20 EUR pro Monat \noder 12, 24 oder 36 EUR pro Jahr (frei wählbar)",
       "vatNote": "Alle Preise enthalten die gesetzliche Mehrwertsteuer, sofern anwendbar (abhängig vom Land des Käufers). Alle Details werden während des Bestellvorgangs vor Abschluss angezeigt.",
       "ready": "Bereit?",
       "amountAMonth": "{{amount}} EUR / Monat",
+      "amountAYear": "{{amount}} EUR / Jahr",
       "subscribeNow": "Jetzt Fördermitglied werden",
-      "orderNow": "Zahlungspflichtig bestellen",
+      "orderNow": "Jetzt bestellen",
       "orderText": "Vielen Dank für Ihre Unterstützung! Sie können nun Ihren Unterstützungsbeitrag wählen und die Buchung abschließen.",
       "acceptRefundPolicy": "Ich akzeptiere die Widerrufsbelehrung"
     },
@@ -434,6 +633,110 @@
       "deleteDevice": "MFA-Gerät löschen: {{title}}",
       "deleted": "Das MFA-Gerät wurde erfolgreich gelöscht.",
       "deleteError": "Entschuldigung, aber wir konnten Ihr MFA-Gerät nicht löschen. Bitte versuchen Sie es später erneut."
+    },
+    "apiKeys": {
+      "keys": "API-Keys",
+      "title": "Titel",
+      "add": "API-Key erstellen",
+      "showKey": "Key anzeigen",
+      "showDocs": "API-Dokumentation anzeigen",
+      "ipLimit": "IP-Adress-Limit",
+      "ipLimitHelp": "Mehrere Adressen durch Komma trennen. Frei lassen, um IP-Limit zu deaktivieren.",
+      "unrestricted": "Nicht limitiert",
+      "noKeys": "Sie haben noch keine API-Keys.",
+      "showKeyDialogTitle": "API-Key anzeigen: {{title}}",
+      "showKeyDialogText": "Bitte authentifizieren Sie sich mit Ihrem Passwort, um den API-Key anzuzeigen.",
+      "showKeyError": "Entschuldigung, aber wir konnten den API-Key nicht abrufen. Bitte versuchen Sie es später erneut.",
+      "showKeyFindBelow": "Ihr API-Key lautet:",
+      "tokenCopySuccess": "Ihr API-Key wurde in die Zwischenablage kopiert.",
+      "tokenCopyError": "Ihr API-Key konnte nicht in die Zwischenablage kopiert werden.",
+      "accountPassword": "Account-Passwort",
+      "deleteKey": "API-Key löschen: {{title}}",
+      "confirmDelete": "Möchten Sie den API-Key wirklich löschen? Er kann dann nicht mehr zum API-Zugriff verwendet werden.",
+      "deleteError": "Entschuldigung, aber wir konnten den API-Key nicht löschen. Bitte versuchen Sie es später erneut.",
+      "deleted": "Ihr API-Key wurde erfolgreich gelöscht.",
+      "defaultTitle": "API-Key",
+      "addText": "Bitte vergeben Sie zur einfacheren Identifikation einen Titel für Ihren neuen API-Key. Sie können die Nutzung des Keys optional auf bestimmte IP-Adresse beschränken. Falls Sie mehrere IP-Adressen angeben möchten, trennen Sie diese bitte durch Komma.",
+      "createError": "Entschuldigung, aber wir konnten den API-Key nicht erstellen. Bitte versuchen Sie es später erneut.",
+      "created": "Ihr API-Key wurde erstellt. Klicken Sie auf \"Key anzeigen\", um den privaten Schlüssel einzublenden.",
+      "editKey": "API-Key bearbeiten: {{title}}",
+      "saveError": "Entschuldigung, aber wir konnten Ihre Änderungen nicht speichern. Bitte versuchen Sie es später erneut.",
+      "saved": "Die Änderungen an Ihrem API-Key wurden erfolgreich gespeichert."
+    },
+    "notificationChannels": {
+      "channels": "Benachrichtigungskanäle",
+      "add": "Kanal hinzufügen",
+      "noChannels": "Sie haben noch keine zusätzlichen Benachrichtigungskanäle.",
+      "accountEmail": "Account-E-Mail",
+      "type": "Typ",
+      "types": {
+        "email": "E-Mail",
+        "webhook": "Webhook",
+        "slack": "Slack",
+        "discord": "Discord",
+        "teams": "Microsoft Teams",
+        "telegram": "Telegram",
+        "pushover": "Pushover",
+        "mattermost": "Mattermost",
+        "googlechat": "Google Chat",
+        "ntfy": "ntfy"
+      },
+      "destination": "Ziel",
+      "emailAddress": "E-Mail-Adresse",
+      "webhookUrl": "Webhook-URL",
+      "botToken": "Bot-Token",
+      "botTokenHelp": "Erstellen Sie einen Bot mit @BotFather und fügen Sie dessen API-Token hier ein.",
+      "chatId": "Chat-ID",
+      "chatIdHelp": "Numerische Chat-ID oder @channelusername, in dem der Bot schreiben darf.",
+      "appToken": "Anwendungs-API-Token",
+      "appTokenHelp": "Ihr Pushover-Anwendungs-API-Token.",
+      "userKey": "Benutzerschlüssel",
+      "userKeyHelp": "Ihr Pushover-Benutzer- oder Gruppenschlüssel.",
+      "serverUrl": "Server-URL",
+      "serverUrlHelp": "Basis-URL des ntfy-Servers, zum Beispiel https://ntfy.sh.",
+      "topic": "Thema",
+      "topicHelp": "Der ntfy-Themenname, an den veröffentlicht wird.",
+      "accessToken": "Zugriffstoken (optional)",
+      "accessTokenHelp": "Optionales Bearer-Token für private Themen.",
+      "messageTemplate": "Nachrichtenvorlage",
+      "messageTemplateHelp": "Platzhalter werden beim Versand der Benachrichtigung ersetzt.",
+      "messageTemplateRequired": "Bitte geben Sie eine Nachrichtenvorlage ein.",
+      "editAsCustomWebhook": "Als benutzerdefinierten Webhook bearbeiten",
+      "presetHints": {
+        "slack": "Fügen Sie eine Incoming-Webhook-URL aus Ihrem Slack-Workspace ein.",
+        "discord": "Fügen Sie eine Discord-Kanal-Webhook-URL ein.",
+        "teams": "Fügen Sie eine Microsoft-Teams-Incoming-Webhook- oder Workflow-URL ein.",
+        "telegram": "Erstellen Sie einen Bot mit @BotFather und geben Sie dessen Token sowie die Chat-ID ein.",
+        "pushover": "Geben Sie Ihren Pushover-Anwendungstoken und Benutzerschlüssel ein.",
+        "mattermost": "Fügen Sie eine Mattermost-Incoming-Webhook-URL ein.",
+        "googlechat": "Fügen Sie eine Google-Chat-Incoming-Webhook-URL ein.",
+        "ntfy": "Wählen Sie ein Thema auf ntfy.sh oder Ihrem eigenen Server. Fügen Sie für private Themen ein Zugriffstoken hinzu."
+      },
+      "payload": "JSON-Payload",
+      "payloadHelp": "Platzhalter in JSON-Zeichenketten werden beim Versand der Benachrichtigung ersetzt.",
+      "payloadInvalid": "Bitte geben Sie gültiges JSON ein.",
+      "enabled": "Aktiviert",
+      "statusEnabled": "Aktiviert",
+      "statusDisabled": "Deaktiviert",
+      "addText": "Benachrichtigungen zu Ihren Cronjobs werden an alle aktivierten Kanäle gesendet. Sie können zusätzliche E-Mail-Adressen, Webhooks oder Messenger-Integrationen hinzufügen.",
+      "createError": "Entschuldigung, aber wir konnten den Benachrichtigungskanal nicht erstellen. Bitte versuchen Sie es später erneut.",
+      "created": "Der Benachrichtigungskanal wurde erfolgreich erstellt.",
+      "editChannel": "Benachrichtigungskanal bearbeiten",
+      "saveError": "Entschuldigung, aber wir konnten Ihre Änderungen nicht speichern. Bitte versuchen Sie es später erneut.",
+      "saved": "Die Änderungen am Benachrichtigungskanal wurden erfolgreich gespeichert.",
+      "deleteChannel": "Benachrichtigungskanal löschen",
+      "confirmDelete": "Möchten Sie diesen Benachrichtigungskanal wirklich löschen? Er empfängt dann keine Benachrichtigungen mehr.",
+      "deleteError": "Entschuldigung, aber wir konnten den Benachrichtigungskanal nicht löschen. Bitte versuchen Sie es später erneut.",
+      "deleted": "Der Benachrichtigungskanal wurde erfolgreich gelöscht.",
+      "cannotUseAccountEmail": "Diese Adresse wird bereits vom Account-E-Mail-Kanal verwendet.",
+      "cannotEdit": "Der Account-E-Mail-Kanal kann nicht bearbeitet werden.",
+      "cannotDelete": "Der Account-E-Mail-Kanal kann nicht gelöscht werden.",
+      "pendingConfirmation": "Bestätigung ausstehend",
+      "pendingConfirmationHint": "Prüfen Sie dieses Postfach auf einen Bestätigungslink. Wenn Sie die E-Mail nicht erhalten haben, löschen Sie diesen Kanal und fügen Sie ihn erneut hinzu.",
+      "cannotEditEmail": "E-Mail-Kanäle können nicht bearbeitet werden. Löschen Sie den Kanal und fügen Sie eine neue Adresse hinzu.",
+      "cannotEnableUnconfirmed": "Dieser Kanal muss bestätigt werden, bevor er aktiviert werden kann.",
+      "createdCheckInbox": "Wir haben eine Bestätigungs-E-Mail an {{email}} gesendet. Klicken Sie auf den Link in der Nachricht, um diesen Kanal zu aktivieren.",
+      "createdCheckInboxTitle": "E-Mail-Adresse bestätigen"
     }
   },
   "statistics": {
@@ -448,5 +751,9 @@
   "confirmEmailChange": {
     "success": "Die E-Mail-Adresse Ihres Accounts wurde erfolgreich geändert. Sie können sich nun mit der neuen E-Mail-Adresse einloggen.",
     "error": "Entschuldigung, aber wir konnten Ihre E-Mail-Adresse nicht ändern. Der Bestätigungslink ist entweder ungültig, abgelaufen oder wurde schon verwendet."
+  },
+  "confirmNotificationChannel": {
+    "success": "Diese E-Mail-Adresse wurde bestätigt und empfängt nun Cronjob-Benachrichtigungen.",
+    "error": "Entschuldigung, wir konnten diese E-Mail-Adresse nicht bestätigen. Der Bestätigungslink ist ungültig, abgelaufen oder wurde bereits verwendet."
   }
 }

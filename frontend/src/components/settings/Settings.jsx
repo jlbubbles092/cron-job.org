@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Button, ButtonGroup, CircularProgress, Grid, InputLabel, LinearProgress, makeStyles, MenuItem, Paper, Select, TableContainer, Typography } from '@material-ui/core';
+import { Box, Button, ButtonGroup, CircularProgress, Grid, InputLabel, LinearProgress, makeStyles, MenuItem, Paper, Select, Switch, TableContainer, Tooltip, Typography } from '@material-ui/core';
 import { grey } from '@material-ui/core/colors';
 import { useTranslation } from 'react-i18next';
-import { createBillingPortalSession, getMFADevices, getUserProfile, updateUserProfile } from '../../utils/API';
+import { getAPIKeys, getMFADevices, getNotificationChannels, getSubscriptionLink, getUserProfile, reenableUserNotifications, setNotificationChannelEnabled, updateUserProfile } from '../../utils/API';
 import useTimezones from '../../hooks/useTimezones';
 import useUserProfile from '../../hooks/useUserProfile';
 import Breadcrumbs from '../misc/Breadcrumbs';
@@ -21,7 +21,8 @@ import ChangePasswordDialog from './ChangePasswordDialog';
 import ChangeEmailAddressDialog from './ChangeEmailAddressDialog';
 import CreateMFADeviceDialog from './CreateMFADeviceDialog';
 import DeleteMFADeviceDialog from './DeleteMFADeviceDialog';
-import { RegexPatterns, SubscriptionStatus } from '../../utils/Constants';
+import { NotificationChannelType, notificationChannelTypeKey, RegexPatterns, SubscriptionStatus } from '../../utils/Constants';
+import { isKnownWebhookPreset, formatNotificationChannelIdentity } from '../../utils/WebhookPresets';
 import DeleteAccountDialog from './DeleteAccountDialog';
 import ManageSubscriptionIcon from '@material-ui/icons/CreditCard';
 import SubscriptionActiveIcon from '@material-ui/icons/FavoriteBorder';
@@ -29,12 +30,24 @@ import SubscriptionInactiveIcon from '@material-ui/icons/PauseCircleOutline';
 import LearnMoreIcon from '@material-ui/icons/Loyalty';
 import TOTPDeviceIcon from '@material-ui/icons/PhoneIphone';
 import YubicoOTPDeviceIcon from '@material-ui/icons/VpnKey';
+import ApiKeyIcon from '@material-ui/icons/VpnKey';
 import DeleteIcon from '@material-ui/icons/Delete';
+import ShowKeyIcon from '@material-ui/icons/Visibility';
 import AddIcon from '@material-ui/icons/Add';
+import DocsIcon from '@material-ui/icons/HelpOutline';
+import EditIcon from '@material-ui/icons/Edit';
 import IconAvatar from '../misc/IconAvatar';
 import { Config } from '../../utils/Config';
 import SubscribeDialog from './SubscribeDialog';
 import Table from '../misc/Table';
+import ShowAPIKeyDialog from './ShowAPIKeyDialog';
+import DeleteAPIKeyDialog from './DeleteAPIKeyDialog';
+import CreateAPIKeyDialog from './CreateAPIKeyDialog';
+import EditAPIKeyDialog from './EditAPIKeyDialog';
+import CreateNotificationChannelDialog from './CreateNotificationChannelDialog';
+import EditNotificationChannelDialog from './EditNotificationChannelDialog';
+import DeleteNotificationChannelDialog from './DeleteNotificationChannelDialog';
+import { notificationChannelTypeIcon } from './NotificationChannelTypeIcon';
 
 const useStyles = makeStyles(theme => ({
   grid: {
@@ -52,10 +65,16 @@ const useStyles = makeStyles(theme => ({
   },
   signupDate: {
     paddingTop: theme.spacing(0.5)
+  },
+  quotaIndicator: {
+    marginRight: theme.spacing(2)
+  },
+  actionButton: {
+    margin: theme.spacing(0.5)
   }
 }));
 
-const REFRESH_INTERVAL = 5000;
+const REFRESH_INTERVAL = 2000;
 
 export default function Settings() {
   const classes = useStyles();
@@ -69,15 +88,29 @@ export default function Settings() {
   const [ saving, setSaving ] = useState(false);
   const [ isLoadingManageSubscription, setIsLoadingManageSubscription ] = useState(false);
 
-  const [ isLoadingMFADevices, setIsLoadingMFADevices ] = useState(true);
-  const [ mfaDevices, setMFADevices] = useState([]);
-
   const [ showChangePassword, setShowChangePassword ] = useState(false);
   const [ showChangeEmail, setShowChangeEmail ] = useState(false);
   const [ showDeleteAccount, setShowDeleteAccount ] = useState(false);
   const [ showSubscribeDialog, setShowSubscribeDialog ] = useState(false);
+
+  const [ isLoadingMFADevices, setIsLoadingMFADevices ] = useState(true);
+  const [ mfaDevices, setMFADevices ] = useState([]);
   const [ showCreateMFADevice, setShowCreateMFADevice ] = useState(false);
   const [ deleteMFADevice, setDeleteMFADevice ] = useState(null);
+
+  const [ isLoadingApiKeys, setIsLoadingApiKeys ] = useState(true);
+  const [ apiKeys, setApiKeys ] = useState([]);
+  const [ showCreateApiKey, setShowCreateApiKey ] = useState(false);
+  const [ showApiKey, setShowApiKey ] = useState(null);
+  const [ deleteApiKey, setDeleteApiKey ] = useState(null);
+  const [ editApiKey, setEditApiKey ] = useState(null);
+
+  const [ isLoadingNotificationChannels, setIsLoadingNotificationChannels ] = useState(true);
+  const [ notificationChannels, setNotificationChannels ] = useState([]);
+  const [ showCreateNotificationChannel, setShowCreateNotificationChannel ] = useState(false);
+  const [ editNotificationChannel, setEditNotificationChannel ] = useState(null);
+  const [ deleteNotificationChannel, setDeleteNotificationChannel ] = useState(null);
+  const [ togglingChannelIds, setTogglingChannelIds ] = useState([]);
 
   const [ firstName, setFirstName ] = useState('');
   const [ lastName, setLastName ] = useState('');
@@ -105,8 +138,58 @@ export default function Settings() {
       .finally(() => setIsLoadingMFADevices(false));
   }
 
+  function refreshApiKeys() {
+    setIsLoadingApiKeys(true);
+    getAPIKeys()
+      .then(response => setApiKeys(response.apiKeys))
+      .finally(() => setIsLoadingApiKeys(false));
+  }
+
+  function refreshNotificationChannels() {
+    setIsLoadingNotificationChannels(true);
+    getNotificationChannels()
+      .then(response => setNotificationChannels(response.notificationChannels))
+      .finally(() => setIsLoadingNotificationChannels(false));
+  }
+
+  function toggleNotificationChannelEnabled(channel, enabled) {
+    if (!channel.builtIn && channel.type === NotificationChannelType.EMAIL && !channel.confirmed) {
+      return;
+    }
+    const notificationsAutoDisabled = !!(userProfile && userProfile.userProfile && userProfile.userProfile.notificationsAutoDisabled);
+    const shouldReenable = channel.builtIn && enabled && notificationsAutoDisabled;
+
+    setTogglingChannelIds(ids => ids.includes(channel.channelId) ? ids : [...ids, channel.channelId]);
+    setNotificationChannels(list => list.map(item => item.channelId === channel.channelId ? { ...item, enabled } : item));
+
+    const requests = [setNotificationChannelEnabled(channel.channelId, enabled)];
+    if (shouldReenable) {
+      requests.push(reenableUserNotifications());
+    }
+
+    Promise.all(requests)
+      .then(() => {
+        if (shouldReenable) {
+          dispatch(setUserProfile({
+            ...userProfile,
+            userProfile: {
+              ...userProfile.userProfile,
+              notificationsAutoDisabled: false
+            }
+          }));
+        }
+      })
+      .catch(() => {
+        setNotificationChannels(list => list.map(item => item.channelId === channel.channelId ? { ...item, enabled: channel.enabled } : item));
+        enqueueSnackbar(t('settings.notificationChannels.saveError'), { variant: 'error' });
+      })
+      .finally(() => setTogglingChannelIds(ids => ids.filter(id => id !== channel.channelId)));
+  }
+
   useEffect(() => {
     refreshMFADevices();
+    refreshApiKeys();
+    refreshNotificationChannels();
   }, []);
 
   function saveSettings() {
@@ -134,12 +217,26 @@ export default function Settings() {
 
   function manageSubscription() {
     setIsLoadingManageSubscription(true);
-    createBillingPortalSession()
-      .then(respone => window.location.href = respone.url)
-      .catch(() => {
-        enqueueSnackbar(t('settings.manageSubscriptionFailed'), { variant: 'error' });
-        setIsLoadingManageSubscription(false);
-      });
+
+    if (userProfile.userSubscription.type === 'paddle') {
+      const wnd = window.open('', '_blank');
+
+      getSubscriptionLink('manage')
+        .then(response => {
+          if (wnd) {
+            wnd.location.href = response.url;
+          } else {
+            window.location.href = response.url;
+          }
+        })
+        .catch(() => {
+          if (wnd) {
+            wnd.close();
+          }
+          enqueueSnackbar(t('settings.manageSubscriptionFailed'), { variant: 'error' });
+        })
+        .finally(() => setIsLoadingManageSubscription(false));
+    }
   }
 
   const isCancelledSubscription = userProfile && userProfile.userSubscription && userProfile.userSubscription.status === SubscriptionStatus.CANCELLED;
@@ -183,6 +280,155 @@ export default function Settings() {
           {t('common.delete')}
         </Button>
       </>
+    }
+  ];
+
+  const APIKEY_COLUMNS = [
+    {
+      head: t('settings.apiKeys.title'),
+      cell: apiKey => <div style={{display: 'flex', alignItems: 'center'}}>
+          <IconAvatar icon={<ApiKeyIcon />} color={apiKey.enabled ? 'green' : 'default'} />
+          <div>
+            {apiKey.title}
+          </div>
+        </div>
+    },
+    {
+      head: t('settings.apiKeys.ipLimit'),
+      cell: apiKey => <>
+        {apiKey.limitIPs.length > 0 ? <>
+          {apiKey.limitIPs.slice(0, 5).join(', ')}
+          {apiKey.limitIPs.length > 5 && <>...</>}
+        </> : <em>{t('settings.apiKeys.unrestricted')}</em>}
+      </>
+    },
+    {
+      head: t('common.actions'),
+      cell: apiKey => <>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ShowKeyIcon />}
+          className={classes.actionButton}
+          onClick={() => setShowApiKey(apiKey)}
+          >
+          {t('settings.apiKeys.showKey')}
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<EditIcon />}
+          className={classes.actionButton}
+          onClick={() => setEditApiKey(apiKey)}
+          >
+          {t('common.edit')}
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<DeleteIcon />}
+          className={classes.actionButton}
+          onClick={() => setDeleteApiKey(apiKey)}
+          >
+          {t('common.delete')}
+        </Button>
+      </>
+    }
+  ];
+
+  const extraNotificationChannels = notificationChannels.filter(channel => !channel.builtIn);
+  const maxNotificationChannels = userProfile && userProfile.userGroup ? userProfile.userGroup.maxNotificationChannels : 0;
+
+  const NOTIFICATION_CHANNEL_COLUMNS = [
+    {
+      head: t('settings.notificationChannels.destination'),
+      cell: channel => {
+        const identity = formatNotificationChannelIdentity(channel);
+        return <div style={{display: 'flex', alignItems: 'center'}}>
+          <IconAvatar
+            icon={notificationChannelTypeIcon(
+              isKnownWebhookPreset(channel.preset)
+                ? channel.preset
+                : notificationChannelTypeKey(channel.type)
+            )}
+            color={channel.enabled && channel.confirmed !== false ? 'green' : 'default'}
+          />
+          <div>
+            <div>
+              {isKnownWebhookPreset(channel.preset)
+                ? t('settings.notificationChannels.types.' + channel.preset)
+                : t('settings.notificationChannels.types.' + notificationChannelTypeKey(channel.type))}
+              {identity ? ` · ${identity}` : ''}
+            </div>
+            {channel.builtIn && <Typography variant='caption' color='textSecondary'>
+              {t('settings.notificationChannels.accountEmail')}
+            </Typography>}
+            {!channel.builtIn && channel.type === NotificationChannelType.EMAIL && !channel.confirmed &&
+              <Tooltip title={t('settings.notificationChannels.pendingConfirmationHint')}>
+                <Typography variant='caption' color='textSecondary' component='div'>
+                  {t('settings.notificationChannels.pendingConfirmation')}
+                </Typography>
+              </Tooltip>}
+          </div>
+        </div>;
+      }
+    },
+    {
+      head: t('settings.notificationChannels.enabled'),
+      cell: channel => {
+        const unconfirmedEmail = !channel.builtIn && channel.type === NotificationChannelType.EMAIL && !channel.confirmed;
+        return <Tooltip title={unconfirmedEmail ? t('settings.notificationChannels.cannotEnableUnconfirmed') : ''}>
+          <span>
+            <Switch
+              size='small'
+              color='primary'
+              checked={!!channel.enabled}
+              disabled={togglingChannelIds.includes(channel.channelId) || unconfirmedEmail}
+              onChange={({target}) => toggleNotificationChannelEnabled(channel, target.checked)}
+              />
+          </span>
+        </Tooltip>;
+      }
+    },
+    {
+      head: t('common.actions'),
+      cell: channel => {
+        const isExtraEmail = !channel.builtIn && channel.type === NotificationChannelType.EMAIL;
+        const editDisabled = channel.builtIn || isExtraEmail;
+        const editTitle = channel.builtIn
+          ? t('settings.notificationChannels.cannotEdit')
+          : (isExtraEmail ? t('settings.notificationChannels.cannotEditEmail') : '');
+        return <>
+        <Tooltip title={editTitle}>
+          <span>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<EditIcon />}
+              className={classes.actionButton}
+              disabled={editDisabled}
+              onClick={() => setEditNotificationChannel(channel)}
+              >
+              {t('common.edit')}
+            </Button>
+          </span>
+        </Tooltip>
+        <Tooltip title={channel.builtIn ? t('settings.notificationChannels.cannotDelete') : ''}>
+          <span>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<DeleteIcon />}
+              className={classes.actionButton}
+              disabled={channel.builtIn}
+              onClick={() => setDeleteNotificationChannel(channel)}
+              >
+              {t('common.delete')}
+            </Button>
+          </span>
+        </Tooltip>
+      </>;
+      }
     }
   ];
 
@@ -248,7 +494,7 @@ export default function Settings() {
 
         {userProfile && <>
           <Grid container className={classes.grid} alignItems='center' justifyContent='center'>
-            <Grid item sm={8} xs={12}>
+            <Grid item sm={6} xs={12}>
               <Box display='flex' alignItems='center'>
                 {((userProfile.userSubscription && userProfile.userSubscription.status !== SubscriptionStatus.INACTIVE) || isPaymentReturn) ? <>
                   {(userProfile.userSubscription.status === SubscriptionStatus.PENDING || (isPaymentReturn && !userProfile.userSubscription)) && <>
@@ -272,7 +518,9 @@ export default function Settings() {
                   {userProfile.userSubscription && userProfile.userSubscription.status === SubscriptionStatus.CANCELLED && <>
                       <IconAvatar icon={SubscriptionInactiveIcon} />
                       <div>
-                        {t('settings.subscriptionInactive', { serviceName: Config.productName })}
+                        {userProfile.userSubscription.isOnGracePeriod ?
+                          <>{t('settings.subscriptionGracePeriod', { serviceName: Config.productName, expiresAt: moment(userProfile.userSubscription.gracePeriodEndsAt * 1000).calendar() })}</> :
+                          <>{t('settings.subscriptionInactive', { serviceName: Config.productName })}</>}
                       </div>
                     </>}
                 </> : <>
@@ -280,27 +528,30 @@ export default function Settings() {
                 </>}
               </Box>
             </Grid>
-            <Grid item sm={4} xs={12} align='right'>
-              {userProfile.userSubscription && userProfile.userSubscription.status !== SubscriptionStatus.CANCELLED ?
-                <Button
-                  size='small'
-                  variant='contained'
-                  startIcon={isLoadingManageSubscription ? <CircularProgress size='small' /> : <ManageSubscriptionIcon />}
-                  onClick={manageSubscription}
-                  disabled={isLoadingManageSubscription}
-                  float='right'
-                  >
-                  {t('settings.manageSubscription')}
-                </Button> : !(isPaymentReturn && !userProfile.userSubscription) &&
-                <Button
-                  size='small'
-                  variant='contained'
-                  startIcon={<LearnMoreIcon />}
-                  onClick={() => setShowSubscribeDialog(true)}
-                  float='right'
-                  >
-                  {t(isCancelledSubscription ? 'settings.becomeASustainingMember' : 'settings.learnMore')}
-                </Button>}
+            <Grid item sm={6} xs={12} align='right'>
+              <ButtonGroup variant='contained' size='small'>
+                {userProfile.userSubscription && userProfile.userSubscription.type==='paddle' &&
+                    <Button
+                      size='small'
+                      variant='contained'
+                      startIcon={isLoadingManageSubscription ? <CircularProgress size='small' /> : <ManageSubscriptionIcon />}
+                      onClick={manageSubscription}
+                      disabled={isLoadingManageSubscription}
+                      float='right'
+                      >
+                      {t('settings.manageSubscription')}
+                    </Button>}
+                {!isPaymentReturn && ((!userProfile.userSubscription) || (userProfile.userSubscription.status === SubscriptionStatus.CANCELLED)) &&
+                  <Button
+                    size='small'
+                    variant='contained'
+                    startIcon={<LearnMoreIcon />}
+                    onClick={() => setShowSubscribeDialog(true)}
+                    float='right'
+                    >
+                    {t(isCancelledSubscription ? 'settings.becomeASustainingMember' : 'settings.learnMore')}
+                  </Button>}
+              </ButtonGroup>
             </Grid>
           </Grid>
         </>}
@@ -323,6 +574,66 @@ export default function Settings() {
           empty={<em>{t('settings.mfa.noDevices')}</em>}
           loading={isLoadingMFADevices}
           rowIdentifier='mfaDeviceId'
+          />
+      </TableContainer>
+
+      <TableContainer component={Paper} className={classes.paper}>
+        <Title actionButtons={<div style={{display: 'flex', alignItems: 'center'}}>
+            <Typography variant='caption' className={classes.quotaIndicator}>
+              {userProfile !== null && !isLoadingApiKeys && t('common.quotaIndicator', { cur: apiKeys.length, max: userProfile.userGroup.maxApiKeys})}
+            </Typography>
+            <ButtonGroup variant='contained' size='small'>
+              <Button
+                variant='contained'
+                size='small'
+                startIcon={<AddIcon />}
+                onClick={() => setShowCreateApiKey(true)}
+                disabled={userProfile === null || isLoadingApiKeys || apiKeys.length >= userProfile.userGroup.maxApiKeys}
+                >{t('settings.apiKeys.add')}
+              </Button>
+              <Button
+                variant='contained'
+                size='small'
+                startIcon={<DocsIcon />}
+                href={Config.apiDocsURL}
+                target='_blank'
+                >{t('settings.apiKeys.showDocs')}
+              </Button>
+            </ButtonGroup>
+          </div>}>
+          {t('settings.apiKeys.keys')}
+        </Title>
+        <Table
+          columns={APIKEY_COLUMNS}
+          items={apiKeys}
+          empty={<em>{t('settings.apiKeys.noKeys')}</em>}
+          loading={isLoadingApiKeys}
+          rowIdentifier='apiKeyId'
+          />
+      </TableContainer>
+
+      <TableContainer component={Paper} className={classes.paper}>
+        <Title actionButtons={<div style={{display: 'flex', alignItems: 'center'}}>
+            <Typography variant='caption' className={classes.quotaIndicator}>
+              {userProfile !== null && !isLoadingNotificationChannels && t('common.quotaIndicator', { cur: extraNotificationChannels.length, max: maxNotificationChannels})}
+            </Typography>
+            <Button
+              variant='contained'
+              size='small'
+              startIcon={<AddIcon />}
+              onClick={() => setShowCreateNotificationChannel(true)}
+              disabled={userProfile === null || isLoadingNotificationChannels || extraNotificationChannels.length >= maxNotificationChannels}
+              >{t('settings.notificationChannels.add')}
+            </Button>
+          </div>}>
+          {t('settings.notificationChannels.channels')}
+        </Title>
+        <Table
+          columns={NOTIFICATION_CHANNEL_COLUMNS}
+          items={notificationChannels}
+          empty={<em>{t('settings.notificationChannels.noChannels')}</em>}
+          loading={isLoadingNotificationChannels}
+          rowIdentifier='channelId'
           />
       </TableContainer>
 
@@ -376,7 +687,7 @@ export default function Settings() {
         </Grid>
       </Paper>
 
-      <Grid container direction='row' justify='flex-end'>
+      <Grid container direction='row' justifyContent='flex-end'>
         <Grid item>
           <Button
             variant='contained'
@@ -397,6 +708,13 @@ export default function Settings() {
     {showSubscribeDialog && <SubscribeDialog onClose={() => setShowSubscribeDialog(false)} />}
     {showCreateMFADevice && <CreateMFADeviceDialog onClose={() => setShowCreateMFADevice(false)} onRefreshMFADevices={() => refreshMFADevices()} username={email} />}
     {deleteMFADevice!==null && <DeleteMFADeviceDialog mfaDevice={deleteMFADevice} onClose={() => setDeleteMFADevice(null)} onRefreshMFADevices={() => refreshMFADevices()} />}
+    {showApiKey!==null && <ShowAPIKeyDialog apiKey={showApiKey} onClose={() => setShowApiKey(null)} />}
+    {deleteApiKey!==null && <DeleteAPIKeyDialog apiKey={deleteApiKey} onClose={() => setDeleteApiKey(null)} onRefreshAPIKeys={() => refreshApiKeys()} />}
+    {showCreateApiKey && <CreateAPIKeyDialog onClose={() => setShowCreateApiKey(false)} onRefreshAPIKeys={() => refreshApiKeys()} />}
+    {editApiKey!==null && <EditAPIKeyDialog apiKey={editApiKey} onClose={() => setEditApiKey(null)} onRefreshAPIKeys={() => refreshApiKeys()} />}
+    {showCreateNotificationChannel && <CreateNotificationChannelDialog accountEmail={email} onClose={() => setShowCreateNotificationChannel(false)} onRefreshChannels={() => refreshNotificationChannels()} />}
+    {editNotificationChannel!==null && <EditNotificationChannelDialog channel={editNotificationChannel} accountEmail={email} onClose={() => setEditNotificationChannel(null)} onRefreshChannels={() => refreshNotificationChannels()} />}
+    {deleteNotificationChannel!==null && <DeleteNotificationChannelDialog channel={deleteNotificationChannel} onClose={() => setDeleteNotificationChannel(null)} onRefreshChannels={() => refreshNotificationChannels()} />}
 
   </div>;
 }

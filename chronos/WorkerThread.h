@@ -13,11 +13,12 @@
 #define _WORKERTHREAD_H_
 
 #include "HTTPRequest.h"
+#include "WorkerMetricsBatch.h"
 
 #include <memory>
 #include <queue>
 #include <thread>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace Chronos
 {
@@ -26,7 +27,7 @@ namespace Chronos
 	class WorkerThread : public std::enable_shared_from_this<WorkerThread>
 	{
 	public:
-		WorkerThread(int mday, int month, int year, int hour, int minute, std::size_t parallelJobs, std::size_t deferMs);
+		WorkerThread(int mday, int month, int year, int hour, int minute, std::size_t parallelJobs, std::size_t deferMs, JobType_t jobType);
 		~WorkerThread();
 
 	private:
@@ -36,7 +37,7 @@ namespace Chronos
 		WorkerThread &operator=(WorkerThread &&other) = delete;
 
 	public:
-		void addJob(HTTPRequest *req);
+		void addJob(std::unique_ptr<HTTPRequest> req);
 		bool empty() const { return requestQueue.empty(); }
 		std::size_t numJobs() const { return requestQueue.size(); }
 		void run();
@@ -50,8 +51,8 @@ namespace Chronos
 	private:
 		std::shared_ptr<WorkerThread> keepAlive;
 		std::unique_ptr<CurlWorker> curlWorker;
-		std::queue<HTTPRequest *> requestQueue;
-		std::size_t runningJobs = 0;
+		std::queue<std::unique_ptr<HTTPRequest>> requestQueue;
+		std::unordered_map<HTTPRequest *, std::unique_ptr<HTTPRequest>> runningJobs;
 		std::thread workerThread;
 		std::size_t parallelJobs;
 		std::size_t deferMs;
@@ -69,7 +70,9 @@ namespace Chronos
 		int year;
 		int hour;
 		int minute;
+		JobType_t jobType;
 		bool inRunJobs = false;
+		WorkerMetricsBatch metricsBatch;
 	};
 };
 

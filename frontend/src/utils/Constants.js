@@ -16,7 +16,8 @@ export const JobStatus = {
   FAILED_SIZE: 6,
   FAILED_URL: 7,
   FAILED_INTERNAL: 8,
-  FAILED_OTHERS: 9
+  FAILED_OTHERS: 9,
+  FAILED_CHALLENGEPAGE: 10
 };
 
 export const RequestMethod = {
@@ -55,12 +56,68 @@ export function jobStatusText(code) {
 export const NotificationType = {
   FAILURE: 0,
   SUCCESS: 1,
-  DISABLE: 2
+  DISABLE: 2,
+  SSL_CERT_EXPIRY: 3
 };
 
 export function notificationTypeText(code) {
   return Object.keys(NotificationType).find(k => NotificationType[k] === code) || 'UNKNOWN';
 }
+
+export const NotificationChannelType = {
+  EMAIL: 0,
+  WEBHOOK: 1
+};
+
+export const JobNotificationMode = {
+  NONE: 0,
+  ALL: 1,
+  SELECTED: 2
+};
+
+export function notificationChannelTypeKey(code) {
+  switch (code) {
+    case NotificationChannelType.EMAIL:
+      return 'email';
+    case NotificationChannelType.WEBHOOK:
+      return 'webhook';
+    default:
+      return 'unknown';
+  }
+}
+
+export const WEBHOOK_PAYLOAD_VARIABLES = [
+  'jobTitle', 'jobId', 'jobUrl',
+  'executed', 'executedTimestamp', 'scheduled', 'scheduledTimestamp',
+  'attempts', 'status', 'sslCertExpiry', 'sslCertExpiryTimestamp',
+  'notificationType'
+];
+
+function webhookPlaceholder(name) {
+  return '${' + name + '}';
+}
+
+export const DEFAULT_WEBHOOK_PAYLOAD = JSON.stringify(
+  Object.fromEntries(WEBHOOK_PAYLOAD_VARIABLES.map(name => [name, webhookPlaceholder(name)])),
+  null,
+  2
+);
+
+export function isValidJson(value) {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export const NotificationResult = {
+  SUCCESS: 0,
+  FAILED_PREPROCESS: 1,
+  FAILED_SEND: 2,
+  FAILED_OTHERS: 3
+};
 
 export const ChartColors = [
   '#003f5c',
@@ -69,6 +126,15 @@ export const ChartColors = [
   '#dd5182',
   '#ff6e54',
   '#ffa600'
+];
+
+export const ChartColorsDark = [
+  '#04b0ff',
+  '#848ec1',
+  '#c492c4',
+  '#eb97b4',
+  '#ffa898',
+  '#ffca66'
 ];
 
 export const TimingFields = [

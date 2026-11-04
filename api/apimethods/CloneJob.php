@@ -11,7 +11,7 @@ class CloneJob extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, RateLimit::SECOND),
       new RateLimit(5, RateLimit::MINUTE)
@@ -36,6 +36,7 @@ class CloneJob extends AbstractAPIMethod {
 
     $job->title .= ' (' . $request->suffix . ')';
     $job->enabled = false;
+    $job->type = \chronos\JobType::DEFAULT;
 
     $jobId = $jobManager->createJob($job);
     if (!$jobId) {

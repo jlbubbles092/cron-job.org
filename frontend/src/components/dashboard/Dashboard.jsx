@@ -3,7 +3,7 @@ import { Paper, makeStyles, Typography, Button, TableContainer, Grid, Box } from
 import { useTranslation } from 'react-i18next';
 import Title from '../misc/Title';
 import Table from '../misc/Table';
-import { getDashboard, updateUserNewsletterSubscribe } from '../../utils/API';
+import { getDashboard, reenableUserNotifications, updateUserNewsletterSubscribe } from '../../utils/API';
 import { useEffect } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useState, useCallback } from 'react';
@@ -11,14 +11,14 @@ import { setDashboardData, setUserProfile } from '../../redux/actions';
 import Breadcrumbs from '../misc/Breadcrumbs';
 import Heading from '../misc/Heading';
 import moment from 'moment';
-import { JobStatus, jobStatusText, notificationTypeText, SubscriptionStatus } from '../../utils/Constants';
+import { JobStatus, jobStatusText, NotificationChannelType, NotificationResult, notificationChannelTypeKey, notificationTypeText, SubscriptionStatus } from '../../utils/Constants';
 import JobIcon from '../jobs/JobIcon';
 import NotificationsIcon from '@material-ui/icons/Notifications';
 import IconAvatar from '../misc/IconAvatar';
 import YesIcon from '@material-ui/icons/Check';
 import NoIcon from '@material-ui/icons/Close';
 import DetailsIcon from '@material-ui/icons/MoreVert';
-import { useHistory } from 'react-router-dom';
+import { Link as RouterLink } from 'react-router-dom';
 import NumberPanel from '../misc/NumberPanel';
 import AddIcon from '@material-ui/icons/AlarmAdd';
 import { Config } from '../../utils/Config';
@@ -27,6 +27,9 @@ import { useSnackbar } from 'notistack';
 import useUserProfile from '../../hooks/useUserProfile';
 import LearnMoreIcon from '@material-ui/icons/Loyalty';
 import SubscribeDialog from '../settings/SubscribeDialog';
+import { Alert, AlertTitle } from '@material-ui/lab';
+import EmailIcon from '@material-ui/icons/Email';
+import SslCertExpiryIcon from '../misc/SslCertExpiryIcon';
 
 const useStyles = makeStyles((theme) => ({
   paper: {
@@ -39,6 +42,11 @@ const useStyles = makeStyles((theme) => ({
     margin: theme.spacing(1)
   }
 }));
+
+function jobHistoryLink(jobFolderId, jobId) {
+  const folderId = jobFolderId || 0;
+  return '/jobs' + (folderId === 0 ? '' : '/folders/' + folderId) + '/' + jobId + '/history';
+}
 
 function EventDescription({ type, details }) {
   const { t } = useTranslation();
@@ -63,23 +71,52 @@ function EventDescription({ type, details }) {
       </div>
     </div>;
   } else if (type === 'NotificationItem') {
+    const success = details.result === NotificationResult.SUCCESS;
+    const icon = details.channelType === NotificationChannelType.EMAIL ? EmailIcon : NotificationsIcon;
+    const captionParts = [];
+    if (details.channelDestination) {
+      captionParts.push(t('events.channelDestination', {
+        channel: t('events.channels.' + notificationChannelTypeKey(details.channelType)),
+        destination: details.channelDestination
+      }));
+    }
+    if (!success && details.resultDetails) {
+      captionParts.push(details.resultDetails);
+    }
+    if (!captionParts.length && details.url) {
+      captionParts.push(details.url);
+    }
+    const caption = captionParts.join(' · ');
+    const captionTitle = details.url && details.url !== caption ? `${caption}\n${details.url}` : caption;
     return <div style={{display: 'flex', alignItems: 'center'}}>
-      <IconAvatar icon={NotificationsIcon} color='blue' />
-      <div>
+      <IconAvatar icon={icon} color={success ? 'green' : 'orange'} />
+      <div style={{minWidth: 0, overflow: 'hidden'}}>
         <div>
-          {t('events.notificationSent', {
+          {t(success ? 'events.notificationSent' : 'events.notificationFailed', {
             notificationType: t('events.notifications.' + notificationTypeText(details.type))
           })}
         </div>
-        <div>
-          <Typography variant="caption">
-            {details.url}
+        {caption ? <div>
+          <Typography variant="caption" title={captionTitle} style={{display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
+            {caption}
           </Typography>
-        </div>
+        </div> : null}
       </div>
     </div>;
   }
   return <></>;
+}
+
+function JobSummary({ job, icon }) {
+  return <div style={{display: 'flex', alignItems: 'center'}}>
+    {icon}
+    <div>
+      <div>{job.title}</div>
+      <div>
+        <Typography variant="caption">{job.url}</Typography>
+      </div>
+    </div>
+  </div>;
 }
 
 const REFRESH_INTERVAL = 60000;
@@ -90,8 +127,8 @@ export default function Dashboard() {
   const { t } = useTranslation();
   const [ isLoading, setIsLoading ] = useState(true);
   const dispatch = useDispatch();
-  const history = useHistory();
   const [ savingNewsletter, setSavingNewsletter ] = useState(false);
+  const [ reenablingNotifications, setReenablingNotifications ] = useState(false);
   const languageCode = useLanguageCode();
   const { enqueueSnackbar } = useSnackbar();
   const userProfile = useUserProfile();
@@ -113,6 +150,17 @@ export default function Dashboard() {
       })
       .catch(() => enqueueSnackbar(t('dashboard.failedToSaveNewsletter'), { variant: 'error' }))
       .finally(() => setSavingNewsletter(false));
+  }
+
+  function reenableNotifications() {
+    setReenablingNotifications(true);
+    reenableUserNotifications()
+      .then(doRefresh)
+      .then(() => {
+        enqueueSnackbar(t('dashboard.bounceWarning.reenableSuccess'), { variant: 'success' });
+      })
+      .catch(() => enqueueSnackbar(t('dashboard.bounceWarning.reenableFailed'), { variant: 'error' }))
+      .finally(() => setReenablingNotifications(false));
   }
 
   useEffect(() => {
@@ -138,11 +186,73 @@ export default function Dashboard() {
           size='small'
           startIcon={<DetailsIcon />}
           className={classes.actionButton}
-          onClick={() => history.push('/jobs/' + event.details.jobId + '/history')}
+          component={RouterLink}
+          to={jobHistoryLink(event.details.jobFolderId, event.details.jobId)}
           >
           {t('common.details')}
         </Button>
       </>
+    }
+  ];
+
+  function jobDetailsButton(job) {
+    return <Button
+      variant='outlined'
+      size='small'
+      startIcon={<DetailsIcon />}
+      className={classes.actionButton}
+      component={RouterLink}
+      to={jobHistoryLink(job.folderId, job.jobId)}
+      >
+      {t('common.details')}
+    </Button>;
+  }
+
+  const UPCOMING_JOBS_COLUMNS = [
+    {
+      head: t('jobs.titleurl'),
+      cell: job => <JobSummary job={job} icon={<JobIcon enabled={true} status={JobStatus.OK} />} />
+    },
+    {
+      head: t('jobs.nextExecution'),
+      cell: job => job.nextExecution ? moment(job.nextExecution * 1000).calendar() : '-'
+    },
+    {
+      head: t('common.actions'),
+      cell: jobDetailsButton
+    }
+  ];
+
+  const EXPIRING_CERTS_COLUMNS = [
+    {
+      head: t('jobs.titleurl'),
+      cell: job => <JobSummary job={job} icon={<IconAvatar icon={NotificationsIcon} color='orange' />} />
+    },
+    {
+      head: t('dashboard.certExpiryDate'),
+      cell: job => <span style={{display: 'inline-flex', alignItems: 'center'}}>
+        {moment(job.sslCertExpiry * 1000).format('LL')}
+        <SslCertExpiryIcon sslCertExpiry={job.sslCertExpiry} />
+      </span>
+    },
+    {
+      head: t('common.actions'),
+      cell: jobDetailsButton
+    }
+  ];
+
+  const FAILED_JOBS_COLUMNS = [
+    {
+      head: t('jobs.titleurl'),
+      cell: job => <JobSummary job={job} icon={<JobIcon enabled={true} status={job.lastStatus} />} />
+    },
+    {
+      head: t('jobs.status'),
+      cell: job => t('jobs.statuses.' + jobStatusText(job.lastStatus))
+    },
+    {
+      head: t('common.actions'),
+      cell: jobDetailsButton
     }
   ];
 
@@ -158,12 +268,47 @@ export default function Dashboard() {
           variant='contained'
           size='small'
           startIcon={<AddIcon />}
-          onClick={() => history.push('/jobs/create')}
+          component={RouterLink}
+          to='/jobs/create'
           >{t('jobs.createJob')}</Button>
       </>}>
       {t('common.dashboard')}
     </Heading>
     <Grid container spacing={2}>
+      {dashboardData && dashboardData.notificationsAutoDisabled && <Grid item xs={12}>
+        <Alert severity='error'>
+          <AlertTitle>{t('dashboard.bounceWarning.title')}</AlertTitle>
+          <div>
+            {t('dashboard.bounceWarning.text')}
+          </div>
+          <div>
+            <Grid container direction='row' justify='flex-end' spacing={2}>
+              <Grid item>
+              </Grid>
+              <Grid item>
+                <Button
+                  size='small'
+                  startIcon={<NotificationsIcon />}
+                  onClick={() => reenableNotifications()}
+                  disabled={reenablingNotifications}>
+                  {t('dashboard.bounceWarning.reenable')}
+                </Button>
+              </Grid>
+              <Grid item>
+                <Button
+                  variant='contained'
+                  size='small'
+                  color='primary'
+                  startIcon={<EmailIcon />}
+                  component={RouterLink}
+                  to='/settings'>
+                  {t('dashboard.bounceWarning.updateProfile')}
+                </Button>
+              </Grid>
+            </Grid>
+          </div>
+        </Alert>
+      </Grid>}
       <Grid item xs={6} sm={3}>
         {dashboardData && <NumberPanel number={dashboardData.enabledJobs} label={t('dashboard.enabledJobs')} />}
       </Grid>
@@ -249,6 +394,52 @@ export default function Dashboard() {
             </Box>
           </Paper>
         </Grid>}
+      {dashboardData && dashboardData.failedJobList && dashboardData.failedJobList.length > 0 && <Grid item xs={12}>
+        <Paper>
+          <Title>{t('dashboard.failedJobsList')}</Title>
+          <TableContainer>
+            <Table
+              size='small'
+              columns={FAILED_JOBS_COLUMNS}
+              items={dashboardData.failedJobList}
+              empty={<em>{t('dashboard.noFailedJobs')}</em>}
+              loading={isLoading}
+              perPage={5}
+              rowsPerPageOptions={[5, 10, 25]}
+              />
+          </TableContainer>
+        </Paper>
+      </Grid>}
+      <Grid item xs={12} md={6}>
+        <Paper>
+          <Title>{t('dashboard.nextRuns')}</Title>
+          <TableContainer>
+            <Table
+              size='small'
+              columns={UPCOMING_JOBS_COLUMNS}
+              items={(dashboardData && dashboardData.upcomingJobs) || []}
+              empty={<em>{t('dashboard.noUpcoming')}</em>}
+              loading={isLoading}
+              />
+          </TableContainer>
+        </Paper>
+      </Grid>
+      <Grid item xs={12} md={6}>
+        <Paper>
+          <Title>{t('dashboard.expiringCerts')}</Title>
+          <TableContainer>
+            <Table
+              size='small'
+              columns={EXPIRING_CERTS_COLUMNS}
+              items={(dashboardData && dashboardData.expiringCerts) || []}
+              empty={<em>{t('dashboard.noExpiringCerts')}</em>}
+              loading={isLoading}
+              perPage={5}
+              rowsPerPageOptions={[5, 10, 25]}
+              />
+          </TableContainer>
+        </Paper>
+      </Grid>
       <Grid item xs={12}>
         <Paper>
           <Title>{t('dashboard.lastevents')}</Title>

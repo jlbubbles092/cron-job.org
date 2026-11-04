@@ -1,4 +1,4 @@
-set(NAME protocol)
+set(NAME chronos-protocol)
 
 find_package(ThriftCompiler REQUIRED)
 find_package(LibThrift REQUIRED)
@@ -15,6 +15,7 @@ endif()
 add_library(${NAME} SHARED
     ${CMAKE_CURRENT_BINARY_DIR}/protocol-cpp/ChronosNode.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/protocol-cpp/ChronosMaster.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/protocol-cpp/WAFValidator.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/protocol-cpp/protocol_types.cpp
     ${ADDITIONAL_SOURCES}
 )
@@ -29,3 +30,5 @@ target_link_libraries(${NAME}
     PUBLIC
         ${LIBTHRIFT_LDFLAGS}
 )
+
+install(TARGETS ${NAME} DESTINATION lib)

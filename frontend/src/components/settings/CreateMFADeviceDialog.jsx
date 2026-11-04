@@ -96,7 +96,7 @@ export default function CreateMFADeviceDialog({ onClose, onRefreshMFADevices, us
               />
           </ListItem>
 
-          <ListItem button onClick={() => setType('yubicoOtpDevice')} selected={type==='yubicoOtpDevice'}>
+          {Config.enableYubicoOTP && <ListItem button onClick={() => setType('yubicoOtpDevice')} selected={type==='yubicoOtpDevice'}>
             <ListItemAvatar>
               <Avatar alt={t('settings.mfa.yubicoOtpDevice.title')}>
                 <YubicoOTPDeviceIcon />
@@ -106,7 +106,7 @@ export default function CreateMFADeviceDialog({ onClose, onRefreshMFADevices, us
               primary={t('settings.mfa.yubicoOtpDevice.title')}
               secondary={t('settings.mfa.yubicoOtpDevice.description')}
               />
-          </ListItem>
+          </ListItem>}
         </List>
 
         {type!==null && <>
@@ -147,6 +147,7 @@ export default function CreateMFADeviceDialog({ onClose, onRefreshMFADevices, us
         {t('settings.mfa.totpDevice.pairInstructions')}
         <Box textAlign='center' m={2}>
           <QRCode value={`otpauth://totp/${encodeURIComponent(Config.productName)}:${encodeURIComponent(username)}?secret=${mfaDevice.secret}&issuer=${encodeURIComponent(Config.productName)}`} />
+          <Box fontFamily='monospace' mt={1} style={{userSelect: 'all', wordBreak: 'break-all'}}>{mfaDevice.secret}</Box>
         </Box>
 
         <FormControl fullWidth>

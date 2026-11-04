@@ -44,11 +44,11 @@ function convertComponent(array, minElement, maxElement) {
   const multiplier = array[1] - array[0];
   const multiplierValidated =
         array.reduce((prev, cur, index) => prev && (index * multiplier + minElement) === cur, true)
-    &&  array.length === Math.floor((maxElement - minElement + 1) / multiplier);
+    &&  array.length === Math.ceil((maxElement - minElement + 1) / multiplier);
   if (multiplierValidated) {
     return '*/' + multiplier;
   }
-  
+
   return compressSequences(array)
     .map(x => Array.isArray(x) ? x.join('-') : '' + x)
     .join(',');
@@ -69,4 +69,84 @@ export function scheduleToCrontabExpression(schedule) {
     return null;
   }
   return result.join(' ');
+}
+
+function isNumeric(x) {
+  return /^\d+$/.test(x);
+}
+
+function parseExpressionComponent(str, minVal, maxVal) {
+  if (str === '*') {
+    return [-1];
+  }
+
+  const result = [];
+
+  // */s syntax
+  if (str.indexOf('/') !== -1) {
+    const parts = str.split('/').map(x => x.trim());
+    if (parts.length !== 2 || parts[0] !== '*' || !isNumeric(parts[1])) {
+      return null;
+    }
+
+    const step = parseInt(parts[1]);
+    if (step < 1) {
+      return null;
+    }
+
+    for (let x = minVal; x <= maxVal; x += step) {
+      result.push(x);
+    }
+    return result;
+  }
+
+  const elements = str.split(',').map(x => x.trim());
+  for (const elem of elements) {
+    if (elem.indexOf('-') !== -1) {
+      const parts = elem
+        .split('-')
+        .map(x => x.trim())
+        .filter(x => isNumeric(x))
+        .map(x => parseInt(x))
+        .filter(x => x >= minVal && x <= maxVal);
+      if (parts.length !== 2 || parts[0] > parts[1]) {
+        return null;
+      }
+      for (let x = parts[0]; x <= parts[1]; ++x) {
+        result.push(x);
+      }
+    } else if (isNumeric(elem)) {
+      const numVal = parseInt(elem);
+      if (numVal >= minVal && numVal <= maxVal) {
+        result.push(parseInt(elem));
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  return [...new Set(result)].sort();
+}
+
+export function crontabExpressionToSchedule(expr) {
+  if (typeof(expr) !== 'string') {
+    return null;
+  }
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return null;
+  }
+  const schedule = {
+    minutes:  parseExpressionComponent(parts[0], 0, 59),
+    hours:    parseExpressionComponent(parts[1], 0, 23),
+    mdays:    parseExpressionComponent(parts[2], 1, 31),
+    months:   parseExpressionComponent(parts[3], 1, 12),
+    wdays:    parseExpressionComponent(parts[4], 0, 6)
+  };
+  if (Object.values(schedule).findIndex(x => x === null) !== -1) {
+    return null;
+  }
+  return schedule;
 }

@@ -17,8 +17,21 @@ export const Config = {
   //!       to add the new language code here.
   'languages': {
     'en': 'English',
+    'da': 'Dansk',
     'de': 'Deutsch',
-    'it': 'Italiano'
+    'it': 'Italiano',
+    'fr': 'Français',
+    'ru': 'Русский',
+    'zh_TW': '正體中文',
+    'ro': 'Română',
+    'pl': 'Polski',
+    'pt_BR': 'Português Brasil',
+    'zh_CN': '简体中文',
+    'hu': 'Magyar',
+    'tr': 'Türkçe',
+    'id': 'Bahasa Indonesia',
+    'es': 'Español',
+    'uk': 'Українська'
   },
 
   //! @note Fallback language to use when the user's auto-determined language is not supported.

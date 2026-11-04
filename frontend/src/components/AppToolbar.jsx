@@ -15,7 +15,7 @@ import useViewport from '../hooks/useViewport';
 import { logOut } from '../utils/Utils';
 import useUserProfile from '../hooks/useUserProfile';
 import { SubscriptionStatus } from '../utils/Constants';
-import { useHistory } from 'react-router';
+import { Link as RouterLink } from 'react-router-dom';
 
 export default function AppToolbar() {
   const dispatch = useDispatch();
@@ -23,13 +23,14 @@ export default function AppToolbar() {
   const languageCode = useLanguageCode();
   const { isMobile } = useViewport();
   const userProfile = useUserProfile();
-  const history = useHistory();
+
+  const sortedLangCodes = Object.keys(Config.languages).sort((a, b) => Config.languages[a].localeCompare(Config.languages[b]));
 
   return isMobile ? <>
     <ActionMenu
       color='inherit'
       text={<LanguageIcon />}
-      items={Object.keys(Config.languages).map(lang => ({
+      items={sortedLangCodes.map(lang => ({
           icon: languageCode===lang ? <CheckedIcon fontSize='small' /> : <UncheckedIcon fontSize='small' />,
           text: Config.languages[lang],
           lang
@@ -44,10 +45,11 @@ export default function AppToolbar() {
       <LogoutIcon />
     </IconButton>
   </> : <>
-    {userProfile && userProfile.userSubscription && userProfile.userSubscription.status === SubscriptionStatus.ACTIVE && <Tooltip title={t('common.sustainingMemberThanks')}>
+    {userProfile && userProfile.userSubscription && (userProfile.userSubscription.status===SubscriptionStatus.ACTIVE || userProfile.userSubscription.status===SubscriptionStatus.EXPIRING || userProfile.userSubscription.isOnGracePeriod === true) && <Tooltip title={t('common.sustainingMemberThanks')}>
       <IconButton
         color='inherit'
-        onClick={() => history.push('/settings')}
+        component={RouterLink}
+        to='/settings'
         >
         <SustainingMemberIcon />
       </IconButton>
@@ -58,7 +60,7 @@ export default function AppToolbar() {
         text={Config.languages[languageCode]}
         startIcon={<LanguageIcon />}
         endIcon={<ExpandIcon />}
-        items={Object.keys(Config.languages).map(lang => ({
+        items={sortedLangCodes.map(lang => ({
             icon: languageCode===lang ? <CheckedIcon fontSize='small' /> : <UncheckedIcon fontSize='small' />,
             text: Config.languages[lang],
             lang

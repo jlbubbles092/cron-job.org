@@ -21,6 +21,8 @@
 #include "ChronosMaster.h"
 #include "App.h"
 #include "Utils.h"
+#include "RpcMetricsProcessorEventHandler.h"
+#include "RpcThrow.h"
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -64,7 +66,7 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosMasterHandler::reportNodeStats(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -78,12 +80,14 @@ public:
         {
             std::unique_ptr<MySQL_DB> db(App::getInstance()->createMasterMySQLConnection());
 
+            bool emailNotificationsEnabled = false;
+
 	        MYSQL_ROW row;
-            auto res = db->query("SELECT `userid`,`email`,`firstname`,`lastname`,`lastlogin_lang` "
+            auto res = db->query("SELECT `userid`,`email`,`firstname`,`lastname`,`lastlogin_lang`,`notifications_auto_disabled`,`email_notifications_enabled` "
                     "FROM `user` WHERE `userid`=%v",
                 userId);
             if(res->numRows() == 0)
-                throw ResourceNotFound();
+                Chronos::RpcThrow::resourceNotFound();
             while((row = res->fetchRow()))
             {
                 _return.userId      = std::stoll(row[0]);
@@ -91,12 +95,50 @@ public:
                 _return.firstName   = row[2];
                 _return.lastName    = row[3];
                 _return.language    = row[4];
+
+                _return.__isset.suppressNotifications   = true;
+                _return.suppressNotifications           = std::stoi(row[5]) == 1;
+
+                emailNotificationsEnabled = std::stoi(row[6]) == 1;
+            }
+
+            _return.__isset.notificationChannels = true;
+
+            if (!_return.suppressNotifications)
+            {
+                NotificationChannel emailChannel;
+                emailChannel.channelId = 0;
+                emailChannel.type = NotificationChannelType::EMAIL;
+                emailChannel.destination = _return.email;
+                emailChannel.enabled = emailNotificationsEnabled;
+                emailChannel.settings = {};
+                _return.notificationChannels.push_back(emailChannel);
+            }
+
+            res = db->query("SELECT `channelid`,`type`,`destination`,`enabled`,`settings` FROM `notificationchannel` WHERE `userid`=%v AND `confirmed`=1",
+                userId);
+            while((row = res->fetchRow()))
+            {
+                NotificationChannel nc;
+                nc.channelId = std::stoll(row[0]);
+                nc.type = static_cast<NotificationChannelType::type>(std::stoi(row[1]));
+                nc.destination = row[2];
+                nc.enabled = std::stoi(row[3]) == 1;
+                nc.settings = row[4];
+
+                // Skip redundant email channels which have the same destination as the synthetic email channel
+                if (nc.type == NotificationChannelType::EMAIL && strcasecmp(nc.destination.c_str(), _return.email.c_str()) == 0)
+                {
+                    continue;
+                }
+
+                _return.notificationChannels.push_back(nc);
             }
         }
         catch(const std::exception &ex)
         {
             std::cout << "ChronosMasterHandler::getUserDetails(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -120,7 +162,7 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosMasterHandler::getPhrases(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -151,7 +193,7 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosMasterHandler::getUserGroups(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 };
@@ -161,13 +203,16 @@ public:
 namespace Chronos {
 
 MasterService::MasterService(const std::string &interface, int port)
-    : server(std::make_shared<TThreadedServer>(
-        std::make_shared<ChronosMasterProcessor>(std::make_shared<ChronosMasterHandler>()),
+{
+    auto handler = std::make_shared<ChronosMasterHandler>();
+    auto processor = std::make_shared<ChronosMasterProcessor>(handler);
+    processor->setEventHandler(std::make_shared<RpcMetricsProcessorEventHandler>("master"));
+    server = std::make_shared<TThreadedServer>(
+        processor,
         std::make_shared<TServerSocket>(interface, port),
         std::make_shared<TBufferedTransportFactory>(),
         std::make_shared<TBinaryProtocolFactory>()
-    ))
-{
+    );
 }
 
 void MasterService::run()

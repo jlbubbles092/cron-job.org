@@ -1,13 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { CircularProgress, Paper, Checkbox, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Link, makeStyles, TableCell, TableHead, Table, TableRow, MenuItem, TableBody, Select, Box, Grid, FormControlLabel } from '@material-ui/core';
+import { CircularProgress, Paper, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, makeStyles, TableCell, TableHead, Table, TableRow, MenuItem, TableBody, Select, Box, Grid } from '@material-ui/core';
 import { useTranslation } from 'react-i18next';
-import { createCheckoutSession } from '../../utils/API';
-import { useSnackbar } from 'notistack';
 import { Config } from '../../utils/Config';
 import YesIcon from '@material-ui/icons/Check';
 import NoIcon from '@material-ui/icons/Close';
 import { red, green } from '@material-ui/core/colors';
 import SubscribeIcon from '@material-ui/icons/ShoppingCart';
+import useUserProfile from '../../hooks/useUserProfile';
 
 const useStyles = makeStyles(theme => ({
   no: {
@@ -28,22 +27,22 @@ export default function SubscribeDialog({ onClose }) {
 
   const onCloseHook = useRef(onClose, []);
   const { t } = useTranslation();
-  const { enqueueSnackbar } = useSnackbar();
 
   const [ state, setState ] = useState(States.TEASER);
   const [ isLoadingOrder, setIsLoadingOrder ] = useState(false);
   const [ productId, setProductId ] = useState('sustain10');
-  const [ acceptToS, setAcceptToS ] = useState(false);
-  const [ acceptRefundPolicy, setAcceptRefundPolicy ] = useState(false);
+
+  const userProfile = useUserProfile();
 
   function startOrder() {
     setIsLoadingOrder(true);
-    createCheckoutSession(productId)
-      .then(respone => window.location.href = respone.url)
-      .catch(() => {
-        enqueueSnackbar(t('settings.orderFailed'), { variant: 'error' })
-        setIsLoadingOrder(false);
-      });
+
+    window.location.href =
+      Config.sustainingMembership.paddle.paymentUrl(t('landingLocale'))
+        + '#userId=' + userProfile.userId
+        + '&email=' + encodeURIComponent(userProfile.userProfile.email)
+        + '&product=' + productId
+        + '&locale=' + t('paddleLocale');
   }
 
   return <Dialog open={true} onClose={onCloseHook.current} fullWidth maxWidth='md'>
@@ -78,13 +77,13 @@ export default function SubscribeDialog({ onClose }) {
                 </TableRow>
                 <TableRow>
                   <TableCell>{t('settings.subscribeDialog.maxRequestSize')}</TableCell>
-                  <TableCell>8 KB</TableCell>
                   <TableCell>64 KB</TableCell>
+                  <TableCell>256 KB</TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell>{t('settings.subscribeDialog.maxFailures')}</TableCell>
-                  <TableCell>15</TableCell>
-                  <TableCell>150</TableCell>
+                  <TableCell>25</TableCell>
+                  <TableCell>200</TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell>{t('settings.subscribeDialog.maxStatusPages')}</TableCell>
@@ -92,9 +91,19 @@ export default function SubscribeDialog({ onClose }) {
                   <TableCell>15 / 20</TableCell>
                 </TableRow>
                 <TableRow>
+                  <TableCell>{t('settings.subscribeDialog.maxApiCallsPerDay')}</TableCell>
+                  <TableCell>100</TableCell>
+                  <TableCell>5000</TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>{t('settings.subscribeDialog.maxNotificationChannels')}</TableCell>
+                  <TableCell>2</TableCell>
+                  <TableCell>25</TableCell>
+                </TableRow>
+                <TableRow>
                   <TableCell>{t('settings.subscribeDialog.price')}</TableCell>
                   <TableCell>{t('settings.subscribeDialog.free')}</TableCell>
-                  <TableCell>{t('settings.subscribeDialog.subscriptionPrices')}</TableCell>
+                  <TableCell style={{whiteSpace: 'pre-line'}}>{t('settings.subscribeDialog.subscriptionPrices')}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -124,32 +133,16 @@ export default function SubscribeDialog({ onClose }) {
           <Box p={2}>
             <Grid container xs={12} md={12}>
               <Grid item xs={12}>
-                <FormControlLabel
-                  control={<Checkbox />}
-                  label={<Link href={Config.termsOfServiceURL} target="_blank" rel="noopener nofollow">{t('signup.acceptToS')}</Link>}
-                  onChange={({target}) => setAcceptToS(target.checked)}
-                  checked={acceptToS}
-                  required
-                  />
-              </Grid>
-              <Grid item xs={12}>
-                <FormControlLabel
-                  control={<Checkbox />}
-                  label={<Link href={Config.refundPolicyURL} target="_blank" rel="noopener nofollow">{t('settings.subscribeDialog.acceptRefundPolicy')}</Link>}
-                  onChange={({target}) => setAcceptRefundPolicy(target.checked)}
-                  checked={acceptRefundPolicy}
-                  required
-                  />
-              </Grid>
-              <Grid item xs={12}>
                 <Box display='flex' alignItems='center' mt={2}>
                   <Box mr={2}>
                     <Select
                       value={productId}
                       onChange={({target}) => setProductId(target.value)}
                       labelID='product-id-label'>
-                      {Config.sustainingMembership.amounts.map(amount =>
+                      {Config.sustainingMembership.amountsAMonth.map(amount =>
                       <MenuItem value={'sustain'+amount} key={amount}>{t('settings.subscribeDialog.amountAMonth', { amount })}</MenuItem>)}
+                      {Config.sustainingMembership.amountsAYear.map(amount =>
+                      <MenuItem value={'sustainyear'+amount} key={amount}>{t('settings.subscribeDialog.amountAYear', { amount })}</MenuItem>)}
                     </Select>
                   </Box>
                   <Box>
@@ -158,7 +151,7 @@ export default function SubscribeDialog({ onClose }) {
                       color='primary'
                       startIcon={isLoadingOrder ? <CircularProgress size='small' /> : <SubscribeIcon />}
                       onClick={() => startOrder()}
-                      disabled={isLoadingOrder || !acceptToS || !acceptRefundPolicy}>
+                      disabled={isLoadingOrder || !userProfile || !userProfile.userId}>
                       {t('settings.subscribeDialog.orderNow')}
                     </Button>
                   </Box>

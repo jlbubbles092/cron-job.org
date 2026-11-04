@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2017-2019 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2017-2026 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -12,7 +12,11 @@
 #include "NodeService.h"
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <iostream>
+#include <ctime>
+#include <unordered_set>
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/server/TThreadedServer.h>
@@ -26,6 +30,8 @@
 #include "HTTPRequest.h"
 #include "JobResult.h"
 #include "TestRunThread.h"
+#include "RpcMetricsProcessorEventHandler.h"
+#include "RpcThrow.h"
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -35,8 +41,147 @@ using namespace ::apache::thrift::server;
 namespace {
 
 constexpr const int TIME_ONE_DAY = 86400;
+//! @note Keep in sync with DB_SCHEMA_VERSION in UpdateThread.cpp
+constexpr const int USER_DB_SCHEMA_SSL = 3;
 
+int getUserDbSchemaVersion(Chronos::SQLite_DB &userDB)
+{
+	auto stmt = userDB.prepare("PRAGMA user_version");
+	while(stmt->execute())
+	{
+		return stmt->intValue(0);
+	}
+
+	return 0;
 }
+
+template<typename T>
+void getJobSchedule(const std::unique_ptr<Chronos::MySQL_DB> &db, const JobIdentifier &identifier, const char *name, std::set<T> &target)
+{
+    MYSQL_ROW row;
+    auto res = db->query("SELECT `%s` FROM `job_%ss` WHERE `jobid`=%v",
+        name, name,
+        identifier.jobId);
+    while((row = res->fetchRow()))
+    {
+        target.insert(std::stoi(row[0]));
+    }
+}
+
+JobNotificationMode::type normalizeNotificationMode(int mode)
+{
+    if(mode == static_cast<int>(JobNotificationMode::NONE)
+        || mode == static_cast<int>(JobNotificationMode::ALL)
+        || mode == static_cast<int>(JobNotificationMode::SELECTED))
+    {
+        return static_cast<JobNotificationMode::type>(mode);
+    }
+    return JobNotificationMode::ALL;
+}
+
+std::vector<int64_t> parseSelectedNotificationChannels(const char *raw)
+{
+    std::vector<int64_t> result;
+    if(raw == nullptr || raw[0] == '\0')
+        return result;
+
+    std::unordered_set<int64_t> seen;
+    for(const auto &part : Chronos::Utils::split(raw, ','))
+    {
+        const std::string trimmed = Chronos::Utils::trim(part);
+        if(trimmed.empty())
+            continue;
+        try
+        {
+            const int64_t channelId = std::stoll(trimmed);
+            if(channelId < 0 || !seen.insert(channelId).second)
+                continue;
+            result.push_back(channelId);
+        }
+        catch(const std::exception &)
+        {
+            // ignore malformed entries
+        }
+    }
+    return result;
+}
+
+std::string serializeSelectedNotificationChannels(const std::vector<int64_t> &channels)
+{
+    std::unordered_set<int64_t> seen;
+    std::string serialized;
+    for(const int64_t channelId : channels)
+    {
+        if(channelId < 0 || !seen.insert(channelId).second)
+            continue;
+        const std::string piece = std::to_string(channelId);
+        const std::size_t needed = serialized.empty() ? piece.size() : piece.size() + 1;
+        if(serialized.size() + needed > 255)
+            break;
+        if(!serialized.empty())
+            serialized.push_back(',');
+        serialized.append(piece);
+    }
+    return serialized;
+}
+
+std::vector<Job> listJobs(const std::function<std::unique_ptr<Chronos::MySQL_Result>(const char *fields)> &queryFn)
+{
+    std::vector<Job> result;
+
+    MYSQL_ROW row;
+    auto res = queryFn("`jobid`,`userid`,`enabled`,`title`,`save_responses`,`last_status`,`last_fetch`,`last_duration`,`fail_counter`,`url`,`request_method`,`timezone`,`type`,`usergroupid`,`request_timeout`,`redirect_success`,`expires_at`,`folderid`,`unfiltered_fail_counter`,`ssl_cert_expiry`");
+    result.reserve(res->numRows());
+    while((row = res->fetchRow()))
+    {
+        Job job;
+
+        job.identifier.jobId = std::stoll(row[0]);
+        job.identifier.userId = std::stoll(row[1]);
+
+        job.metaData.enabled = std::strcmp(row[2], "1") == 0;
+        job.metaData.title = row[3];
+        job.metaData.saveResponses = std::strcmp(row[4], "1") == 0;
+        job.metaData.type = static_cast<JobType::type>(std::stoi(row[12])); //!< @todo Nicer conversion
+        job.metaData.userGroupId = std::stoll(row[13]);
+        job.metaData.requestTimeout = std::stoi(row[14]);
+        job.metaData.redirectSuccess = std::strcmp(row[15], "1") == 0;
+        job.metaData.folderId = std::stoi(row[17]);
+        job.metaData.__isset.userGroupId = true;
+        job.metaData.__isset.requestTimeout = true;
+        job.metaData.__isset.redirectSuccess = true;
+        job.metaData.__isset.folderId = true;
+        job.__isset.metaData = true;
+
+        job.executionInfo.lastStatus = static_cast<JobStatus::type>(std::stoi(row[5])); //!< @todo Nicer conversion
+        job.executionInfo.lastFetch = std::stoll(row[6]);
+        job.executionInfo.lastDuration = std::stoi(row[7]);
+        job.executionInfo.failCounter = std::stoi(row[8]);
+        job.executionInfo.unfilteredFailCounter = std::stoi(row[18]);
+        if(std::stoll(row[19]) > 0)
+        {
+            job.executionInfo.sslCertExpiry = std::stoll(row[19]);
+            job.executionInfo.__isset.sslCertExpiry = true;
+        }
+        job.__isset.executionInfo = true;
+
+        job.data.url = row[9];
+        job.data.requestMethod = static_cast<RequestMethod::type>(std::stoi(row[10])); //!< @todo Nicer conversion
+        job.__isset.data = true;
+
+        job.schedule.timezone = row[11];
+        job.__isset.schedule = true;
+
+        job.schedule.expiresAt = std::stoll(row[16]);
+        job.schedule.__isset.expiresAt = true;
+
+        result.push_back(job);
+    }
+
+    return result;
+}
+
+} // anon ns
 
 namespace {
 
@@ -56,6 +201,51 @@ public:
         return true;
     }
 
+    void searchJobsByUrl(SearchJobsResult &_return, const std::string &query, const bool enabledOnly) override
+    {
+        std::cout << "ChronosNodeHandler::searchJobsByUrl(" << query.size()
+            << ", enabledOnly=" << (enabledOnly ? "true" : "false") << ")" << std::endl;
+
+        constexpr const int MAX_RESULTS = 100;
+        constexpr const int MIN_QUERY_LENGTH = 3;
+        constexpr const int MAX_QUERY_LENGTH = 1024;
+
+        std::string trimmedQuery = Chronos::Utils::trim(query);
+        if (trimmedQuery.size() < MIN_QUERY_LENGTH || trimmedQuery.size() > MAX_QUERY_LENGTH)
+        {
+            Chronos::RpcThrow::invalidArguments();
+        }
+
+        try
+        {
+            std::unique_ptr<Chronos::MySQL_DB> db(Chronos::App::getInstance()->createMySQLConnection());
+
+            _return.result = listJobs([&](const char *fields) {
+                if (enabledOnly)
+                {
+                    return db->query("SELECT %s FROM `job` WHERE LOCATE('%q', `url`)>0 AND `enabled`=1 LIMIT %d",
+                        fields,
+                        trimmedQuery.c_str(),
+                        MAX_RESULTS + 1);
+                }
+                return db->query("SELECT %s FROM `job` WHERE LOCATE('%q', `url`)>0 LIMIT %d",
+                    fields,
+                    trimmedQuery.c_str(),
+                    MAX_RESULTS + 1);
+            });
+            _return.hasMoreResults = _return.result.size() > MAX_RESULTS;
+            if(_return.hasMoreResults)
+            {
+                _return.result.pop_back();
+            }
+        }
+        catch(const std::exception &ex)
+        {
+            std::cout << "ChronosNodeHandler::searchJobsByUrl(): Exception: "  << ex.what() << std::endl;
+            Chronos::RpcThrow::internalError();
+        }
+    }
+
     void getJobsForUser(std::vector<Job> &_return, const int64_t userId) override
     {
         std::cout << "ChronosNodeHandler::getJobsForUser(" << userId << ")" << std::endl;
@@ -64,53 +254,25 @@ public:
         {
             std::unique_ptr<Chronos::MySQL_DB> db(Chronos::App::getInstance()->createMySQLConnection());
 
-	        MYSQL_ROW row;
-            auto res = db->query("SELECT `jobid`,`userid`,`enabled`,`title`,`save_responses`,`last_status`,`last_fetch`,`last_duration`,`fail_counter`,`url`,`request_method`,`timezone`,`type`,`usergroupid`,`request_timeout` FROM `job` WHERE `userid`=%v",
-                userId);
-            _return.reserve(res->numRows());
-            while((row = res->fetchRow()))
+            _return = listJobs([&](const char *fields) {
+                return db->query("SELECT %s FROM `job` WHERE `userid`=%v",
+                    fields,
+                    userId);
+            });
+
+            for (auto &job : _return)
             {
-                Job job;
-
-                job.identifier.jobId = std::stoll(row[0]);
-                job.identifier.userId = std::stoll(row[1]);
-
-                job.metaData.enabled = std::strcmp(row[2], "1") == 0;
-                job.metaData.title = row[3];
-                job.metaData.saveResponses = std::strcmp(row[4], "1") == 0;
-                job.metaData.type = static_cast<JobType::type>(std::stoi(row[12])); //!< @todo Nicer conversion
-                job.metaData.userGroupId = std::stoll(row[13]);
-                job.metaData.requestTimeout = std::stoi(row[14]);
-                job.metaData.__isset.userGroupId = true;
-                job.metaData.__isset.requestTimeout = true;
-                job.__isset.metaData = true;
-
-                job.executionInfo.lastStatus = static_cast<JobStatus::type>(std::stoi(row[5])); //!< @todo Nicer conversion
-                job.executionInfo.lastFetch = std::stoll(row[6]);
-                job.executionInfo.lastDuration = std::stoi(row[7]);
-                job.executionInfo.failCounter = std::stoi(row[8]);
-                job.__isset.executionInfo = true;
-
-                job.data.url = row[9];
-                job.data.requestMethod = static_cast<RequestMethod::type>(std::stoi(row[10])); //!< @todo Nicer conversion
-                job.__isset.data = true;
-
-                job.schedule.timezone = row[11];
-                job.__isset.schedule = true;
-
                 getJobSchedule(db, job.identifier, "hour",      job.schedule.hours);
                 getJobSchedule(db, job.identifier, "mday",      job.schedule.mdays);
                 getJobSchedule(db, job.identifier, "minute",    job.schedule.minutes);
                 getJobSchedule(db, job.identifier, "month",     job.schedule.months);
                 getJobSchedule(db, job.identifier, "wday",      job.schedule.wdays);
-
-                _return.push_back(job);
             }
         }
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::getJobsForUser(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -125,12 +287,14 @@ public:
 	        MYSQL_ROW row;
             auto res = db->query("SELECT `jobid`,`userid`,`enabled`,`title`,`save_responses`,`last_status`,`last_fetch`,"
                     "`last_duration`,`fail_counter`,`url`,`request_method`,`auth_enable`,`auth_user`,`auth_pass`,"
-                    "`notify_failure`,`notify_success`,`notify_disable`,`timezone`,`type`,`usergroupid`,`request_timeout` "
+                    "`notify_failure`,`notify_success`,`notify_disable`,`timezone`,`type`,`usergroupid`,`request_timeout`, "
+                    "`redirect_success`,`expires_at`,`folderid`,`notify_failure_count`,`unfiltered_fail_counter`,`ssl_cert_expiry`,`notify_ssl_cert_expiry`,`notify_ssl_cert_expiry_seconds`,"
+                    "`notification_mode`,`selected_notification_channels` "
                     "FROM `job` WHERE `jobid`=%v AND `userid`=%v",
                 identifier.jobId,
                 identifier.userId);
             if(res->numRows() == 0)
-                throw ResourceNotFound();
+                Chronos::RpcThrow::resourceNotFound();
             while((row = res->fetchRow()))
             {
                 _return.identifier.jobId = std::stoll(row[0]);
@@ -142,14 +306,24 @@ public:
                 _return.metaData.type = static_cast<JobType::type>(std::stoi(row[18])); //!< @todo Nicer conversion
                 _return.metaData.userGroupId = std::stoll(row[19]);
                 _return.metaData.requestTimeout = std::stoi(row[20]);
+                _return.metaData.redirectSuccess = std::strcmp(row[21], "1") == 0;
+                _return.metaData.folderId = std::stoi(row[23]);
                 _return.metaData.__isset.userGroupId = true;
                 _return.metaData.__isset.requestTimeout = true;
+                _return.metaData.__isset.redirectSuccess = true;
+                _return.metaData.__isset.folderId = true;
                 _return.__isset.metaData = true;
 
                 _return.executionInfo.lastStatus = static_cast<JobStatus::type>(std::stoi(row[5])); //!< @todo Nicer conversion
                 _return.executionInfo.lastFetch = std::stoll(row[6]);
                 _return.executionInfo.lastDuration = std::stoi(row[7]);
                 _return.executionInfo.failCounter = std::stoi(row[8]);
+                _return.executionInfo.unfilteredFailCounter = std::stoi(row[25]);
+                if(std::stoll(row[26]) > 0)
+                {
+                    _return.executionInfo.sslCertExpiry = std::stoll(row[26]);
+                    _return.executionInfo.__isset.sslCertExpiry = true;
+                }
                 _return.__isset.executionInfo = true;
 
                 _return.data.url = row[9];
@@ -162,12 +336,22 @@ public:
                 _return.__isset.authentication = true;
 
                 _return.notification.onFailure = std::strcmp(row[14], "1") == 0;
+                _return.notification.onFailureCount = std::stoi(row[24]);
                 _return.notification.onSuccess = std::strcmp(row[15], "1") == 0;
                 _return.notification.onDisable = std::strcmp(row[16], "1") == 0;
+                _return.notification.onSslCertExpiry = std::strcmp(row[27], "1") == 0;
+                _return.notification.onSslCertExpirySeconds = std::stoi(row[28]);
+                _return.notification.mode = normalizeNotificationMode(std::stoi(row[29]));
+                _return.notification.selectedChannels = parseSelectedNotificationChannels(row[30]);
+                _return.notification.__isset.mode = true;
+                _return.notification.__isset.selectedChannels = true;
                 _return.__isset.notification = true;
 
                 _return.schedule.timezone = row[17];
                 _return.__isset.schedule = true;
+
+                _return.schedule.expiresAt = std::stoll(row[22]);
+                _return.schedule.__isset.expiresAt = true;
             }
 
             getJobSchedule(db, identifier, "hour",      _return.schedule.hours);
@@ -199,7 +383,7 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::getJobDetails(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -210,7 +394,7 @@ public:
         std::cout << "ChronosNodeHandler::createOrUpdateJob(" << job.identifier.jobId << ", " << job.identifier.userId << ")" << std::endl;
 
         if(job.identifier.userId <= 0 || job.identifier.jobId <= 0)
-            throw InvalidArguments();
+            Chronos::RpcThrow::invalidArguments();
 
         try
         {
@@ -227,7 +411,7 @@ public:
             }
             else if (jobUser != job.identifier.userId)
             {
-                throw Forbidden();
+                Chronos::RpcThrow::forbidden();
             }
 
             if(job.__isset.metaData)
@@ -252,6 +436,20 @@ public:
                         job.metaData.requestTimeout,
                         job.identifier.jobId);
                 }
+
+                if(job.metaData.__isset.redirectSuccess)
+                {
+                    db->query("UPDATE `job` SET `redirect_success`=%d WHERE `jobid`=%v",
+                        job.metaData.redirectSuccess ? 1 : 0,
+                        job.identifier.jobId);
+                }
+
+                if(job.metaData.__isset.folderId)
+                {
+                    db->query("UPDATE `job` SET `folderid`=%d WHERE `jobid`=%v",
+                        job.metaData.folderId,
+                        job.identifier.jobId);
+                }
             }
 
             if(job.__isset.authentication)
@@ -265,17 +463,30 @@ public:
 
             if(job.__isset.notification)
             {
-                db->query("UPDATE `job` SET `notify_failure`=%d, `notify_success`=%d, `notify_disable`=%d WHERE `jobid`=%v",
+                const JobNotificationMode::type mode = job.notification.__isset.mode
+                    ? normalizeNotificationMode(static_cast<int>(job.notification.mode))
+                    : JobNotificationMode::ALL;
+                const std::string selectedChannels = job.notification.__isset.selectedChannels
+                    ? serializeSelectedNotificationChannels(job.notification.selectedChannels)
+                    : std::string();
+
+                db->query("UPDATE `job` SET `notify_failure`=%d, `notify_failure_count`=%d, `notify_success`=%d, `notify_disable`=%d, `notify_ssl_cert_expiry`=%d, `notify_ssl_cert_expiry_seconds`=%d, `notification_mode`=%d, `selected_notification_channels`='%q' WHERE `jobid`=%v",
                     job.notification.onFailure ? 1 : 0,
+                    std::max(1, job.notification.onFailureCount),
                     job.notification.onSuccess ? 1 : 0,
                     job.notification.onDisable ? 1 : 0,
+                    job.notification.onSslCertExpiry ? 1 : 0,
+                    std::max(0, job.notification.onSslCertExpirySeconds),
+                    static_cast<int>(mode),
+                    selectedChannels.c_str(),
                     job.identifier.jobId);
             }
 
             if(job.__isset.schedule)
             {
-                db->query("UPDATE `job` SET `timezone`='%q' WHERE `jobid`=%v",
+                db->query("UPDATE `job` SET `timezone`='%q', `schedule_load_factor`=%f WHERE `jobid`=%v",
                     job.schedule.timezone.c_str(),
+                    calculateScheduleLoad(job.schedule),
                     job.identifier.jobId);
 
                 saveJobSchedule(db, job.identifier, "hour",      job.schedule.hours);
@@ -283,6 +494,13 @@ public:
                 saveJobSchedule(db, job.identifier, "minute",    job.schedule.minutes);
                 saveJobSchedule(db, job.identifier, "month",     job.schedule.months);
                 saveJobSchedule(db, job.identifier, "wday",      job.schedule.wdays);
+
+                if(job.schedule.__isset.expiresAt)
+                {
+                    db->query("UPDATE `job` SET `expires_at`=%v WHERE `jobid`=%v",
+                        job.schedule.expiresAt,
+                        job.identifier.jobId);
+                }
             }
 
             if(job.__isset.data)
@@ -318,12 +536,17 @@ public:
                 }
             }
 
+            db->query("UPDATE `job` SET `fail_counter`=0,`unfiltered_fail_counter`=0 WHERE `jobid`=%v",
+                job.identifier.jobId);
+
             db->query("COMMIT");
+
+            App::getInstance()->markJobDirty(job.identifier.jobId);
         }
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::createOrUpdateJob(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -338,7 +561,7 @@ public:
             std::unique_ptr<MySQL_DB> db(App::getInstance()->createMySQLConnection());
 
             if(!jobExists(db, identifier))
-                throw ResourceNotFound();
+                Chronos::RpcThrow::resourceNotFound();
 
             db->query("BEGIN");
             db->query("DELETE FROM `notification` WHERE `jobid`=%v",    identifier.jobId);
@@ -351,11 +574,13 @@ public:
             db->query("DELETE FROM `job_header` WHERE `jobid`=%v",      identifier.jobId);
             db->query("DELETE FROM `job` WHERE `jobid`=%v",             identifier.jobId);
             db->query("COMMIT");
+
+            App::getInstance()->markJobDirty(identifier.jobId);
         }
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::deleteJob(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -364,7 +589,7 @@ public:
         std::cout << "ChronosNodeHandler::getJobLog(" << identifier.jobId << ", " << identifier.userId << ", " << maxEntries << ")" << std::endl;
 
         if(maxEntries <= 0)
-            throw InvalidArguments();
+            Chronos::RpcThrow::invalidArguments();
 
         try
         {
@@ -383,7 +608,7 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::getJobLog(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -400,10 +625,18 @@ public:
         {
             userDB = std::make_unique<SQLite_DB>(dbFilePath.c_str(), true /* read only */);
 
-            auto stmt = userDB->prepare("SELECT * FROM \"joblog\" "
+            const int schemaVersion = getUserDbSchemaVersion(*userDB);
+
+            std::string query = "SELECT * FROM \"joblog\" "
                 "LEFT JOIN \"joblog_response\" ON \"joblog_response\".\"joblogid\"=\"joblog\".\"joblogid\" "
-                "LEFT JOIN \"joblog_stats\" ON \"joblog_stats\".\"joblogid\"=\"joblog\".\"joblogid\" "
-                "WHERE \"joblog\".\"joblogid\"=:joblogid");
+                "LEFT JOIN \"joblog_stats\" ON \"joblog_stats\".\"joblogid\"=\"joblog\".\"joblogid\" ";
+            if(schemaVersion >= USER_DB_SCHEMA_SSL)
+            {
+                query += "LEFT JOIN \"joblog_ssl\" ON \"joblog_ssl\".\"joblogid\"=\"joblog\".\"joblogid\" ";
+            }
+            query += "WHERE \"joblog\".\"joblogid\"=:joblogid";
+
+            auto stmt = userDB->prepare(query);
             stmt->bind(":joblogid", jobLogId);
 
             while(stmt->execute())
@@ -420,11 +653,11 @@ public:
                 return;
             }
 
-            throw ResourceNotFound();
+            Chronos::RpcThrow::resourceNotFound();
         }
         catch(const std::exception &ex)
         {
-            throw ResourceNotFound();
+            Chronos::RpcThrow::resourceNotFound();
         }
     }
 
@@ -435,14 +668,14 @@ public:
         std::cout << "ChronosNodeHandler::getNotifications(" << userId << ")" << std::endl;
 
         if(userId <= 0)
-            throw InvalidArguments();
+            Chronos::RpcThrow::invalidArguments();
 
         try
         {
             std::unique_ptr<MySQL_DB> db(App::getInstance()->createMySQLConnection());
 
 	        MYSQL_ROW row;
-            auto res = db->query("SELECT `notification`.`joblogid`,`notification`.`jobid`,`job`.`userid`,`notification`.`date`,`notification`.`type`,`notification`.`date_started`,`notification`.`date_planned`,`notification`.`url`,`notification`.`execution_status`,`notification`.`execution_status_text`,`notification`.`execution_http_status` "
+            auto res = db->query("SELECT `notification`.`notificationid`,`notification`.`jobid`,`job`.`userid`,`notification`.`date`,`notification`.`type`,`notification`.`date_started`,`notification`.`date_planned`,`notification`.`url`,`notification`.`execution_status`,`notification`.`execution_status_text`,`notification`.`execution_http_status`,`notification`.`notificationchannelid`,`notification`.`notificationchanneltype`,`notification`.`notificationchanneldestination`,`notification`.`result`,`notification`.`result_details`,`notification`.`joblogid` "
                 "FROM `notification` "
                 "INNER JOIN `job` ON `job`.`jobid`=`notification`.`jobid` "
                 "WHERE `job`.`userid`=%v "
@@ -455,6 +688,7 @@ public:
                 NotificationEntry n;
 
                 n.notificationId = std::stoll(row[0]);
+                n.jobLogId = std::stoll(row[16]);
 
                 n.jobIdentifier.jobId = std::stoll(row[1]);
                 n.jobIdentifier.userId = std::stoll(row[2]);
@@ -472,13 +706,19 @@ public:
                 n.executionStatusText = row[9];
                 n.httpStatus = std::stoi(row[10]);
 
+                n.notificationChannelId = std::stoll(row[11]);
+                n.notificationChannelType = static_cast<NotificationChannelType::type>(std::stoi(row[12])); //!< @todo Nicer conversion
+                n.notificationChannelDestination = row[13];
+                n.result = static_cast<NotificationResult::type>(std::stoi(row[14])); //!< @todo Nicer conversion
+                n.resultDetails = row[15];
+
                 _return.push_back(n);
             }
         }
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::getNotifications(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -492,37 +732,19 @@ public:
         getDayTimeSeriesForYear(_return.last12Months, identifier, now.tm_year + 1900 - 1, now.tm_mon, now.tm_mday, p);
         getDayTimeSeriesForYear(_return.last12Months, identifier, now.tm_year + 1900, 0, 1, p);
 
-        std::vector<JobLogEntry> jobLog;
-        getJobLogForDay(jobLog,  identifier, tmYesterday.tm_mday, tmYesterday.tm_mon, -1);
-        getJobLogForDay(jobLog,  identifier, now.tm_mday, now.tm_mon, -1);
-
+        const time_t minDate = time(nullptr) - 86400;
         std::vector<TimeSeriesDataEntry> jobLogTimeSeries;
-        jobLogTimeSeries.reserve(jobLog.size());
+        getTimeSeriesForDay(jobLogTimeSeries, identifier, tmYesterday.tm_mday, tmYesterday.tm_mon, minDate);
+        getTimeSeriesForDay(jobLogTimeSeries, identifier, now.tm_mday, now.tm_mon, minDate);
 
-        for(const auto &entry : jobLog)
-        {
-            TimeSeriesDataEntry td;
-            td.date = entry.date;
-            td.uptimeCounter = (entry.status == JobStatus::OK) ? 1 : 0;
-            td.uptimeDenominator = 1;
-            td.duration = entry.stats.total / 1000;
-
-            jobLogTimeSeries.push_back(td);
-        }
-
-        _return.last24Hours = downsampleTimeSeriesData(jobLogTimeSeries, time(nullptr) - 86400, 15 * 60, p);
+        _return.last24Hours = downsampleTimeSeriesData(jobLogTimeSeries, 15 * 60, p);
     }
 
-    std::vector<TimeSeriesDataEntry> downsampleTimeSeriesData(const std::vector<TimeSeriesDataEntry> &in, const time_t minDate, const int seconds, const double p)
+    std::vector<TimeSeriesDataEntry> downsampleTimeSeriesData(const std::vector<TimeSeriesDataEntry> &in, const int seconds, const double p)
     {
         std::map<int64_t, std::vector<TimeSeriesDataEntry>> aggregate;
         for (const auto &entry : in)
         {
-            if (entry.date < minDate)
-            {
-                continue;
-            }
-
             TimeSeriesDataEntry newEntry(entry);
             newEntry.date -= newEntry.date % seconds;
 
@@ -617,7 +839,64 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::updateUserGroupId(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
+        }
+    }
+
+    double getUserScheduleLoad(const int64_t userId) override
+    {
+        using namespace Chronos;
+
+        double result = 0.;
+
+        std::cout << "ChronosNodeHandler::getUserScheduleLoad(" << userId << ")" << std::endl;
+
+        try
+        {
+            std::unique_ptr<MySQL_DB> db(App::getInstance()->createMySQLConnection());
+
+            MYSQL_ROW row;
+            auto res = db->query("SELECT SUM(`schedule_load_factor`) FROM `job` WHERE `userid`=%v AND `schedule_load_factor` IS NOT NULL AND (`expires_at`=0 OR `expires_at`>=%u) AND `enabled`=1",
+                userId, getExpiryCompareVal(time(nullptr)));
+            while((row = res->fetchRow()))
+            {
+                result = std::stod(row[0]);
+            }
+        }
+        catch(const std::exception &ex)
+        {
+            std::cout << "ChronosNodeHandler::getUserScheduleLoad(): Exception: "  << ex.what() << std::endl;
+            Chronos::RpcThrow::internalError();
+        }
+
+        return result;
+    }
+
+    void getUserInfoForAllUsers(std::vector<UserInfo> &_return) override
+    {
+        using namespace Chronos;
+
+        std::cout << "ChronosNodeHandler::getUserInfoForAllUsers()" << std::endl;
+
+        try
+        {
+            std::unique_ptr<MySQL_DB> db(App::getInstance()->createMySQLConnection());
+
+            MYSQL_ROW row;
+            auto res = db->query("SELECT `userid`, SUM(`schedule_load_factor`) FROM `job` WHERE `schedule_load_factor` IS NOT NULL AND (`expires_at`=0 OR `expires_at`>=%u) AND `enabled`=1 GROUP BY `userid`",
+                getExpiryCompareVal(time(nullptr)));
+            while((row = res->fetchRow()))
+            {
+                UserInfo ui;
+                ui.userId = std::stoll(row[0]);
+                ui.scheduleLoad = std::stod(row[1]);
+                _return.push_back(ui);
+            }
+        }
+        catch(const std::exception &ex)
+        {
+            std::cout << "ChronosNodeHandler::getUserInfoForAllUsers(): Exception: "  << ex.what() << std::endl;
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -637,7 +916,29 @@ public:
         catch(const std::exception &ex)
         {
             std::cout << "ChronosNodeHandler::disableJobsForUser(): Exception: "  << ex.what() << std::endl;
-            throw InternalError();
+            Chronos::RpcThrow::internalError();
+        }
+    }
+
+    void moveJobsFromUserFolder(const int64_t userId, const int64_t sourceFolderId, const int64_t destFolderId) override
+    {
+        using namespace Chronos;
+
+        std::cout << "ChronosNodeHandler::moveJobsFromUserFolder(" << userId << ", " << sourceFolderId << ", " << destFolderId << ")" << std::endl;
+
+        try
+        {
+            std::unique_ptr<MySQL_DB> db(App::getInstance()->createMySQLConnection());
+
+            db->query("UPDATE `job` SET `folderid`=%v WHERE `userid`=%v AND `folderid`=%v",
+                destFolderId,
+                userId,
+                sourceFolderId);
+        }
+        catch(const std::exception &ex)
+        {
+            std::cout << "ChronosNodeHandler::moveJobsFromUserFolder(): Exception: "  << ex.what() << std::endl;
+            Chronos::RpcThrow::internalError();
         }
     }
 
@@ -651,6 +952,7 @@ public:
 
         int maxSize = Chronos::App::getInstance()->config->getInt("request_max_size");
         int requestTimeout = Chronos::App::getInstance()->config->getInt("request_timeout");
+        bool redirectSuccess = false;
 
         if(job.__isset.metaData && job.metaData.__isset.userGroupId)
         {
@@ -667,18 +969,25 @@ public:
             }
         }
 
-        std::unique_ptr<Chronos::HTTPRequest> req(Chronos::HTTPRequest::fromURL(
-            job.data.url,
+        if(job.__isset.metaData && job.metaData.__isset.redirectSuccess)
+        {
+            redirectSuccess = job.metaData.redirectSuccess;
+        }
+
+        std::unique_ptr<Chronos::HTTPRequest> req = Chronos::HTTPRequest::fromURL(
+            Chronos::Utils::replaceVariables(job.data.url),
             job.identifier.userId,
             maxSize,
             requestTimeout
-        ));
+        );
         req->result->jobID          = job.identifier.jobId;
         req->result->datePlanned    = Chronos::Utils::getTimestampMS();
         req->result->notifyFailure 	= false;
+        req->result->notifyFailureCount = 1;
         req->result->notifySuccess 	= false;
         req->result->notifyDisable 	= false;
         req->result->oldFailCounter	= 0;
+        req->result->oldUnfilteredFailCounter = 0;
         req->result->saveResponses	= true;
 
         if(job.__isset.authentication)
@@ -688,6 +997,8 @@ public:
             req->authPassword       = job.authentication.password;
         }
 
+        req->redirectSuccess        = redirectSuccess;
+
         //! @todo Proper conversion
         req->requestMethod          = static_cast<Chronos::RequestMethod>(job.data.requestMethod);
 
@@ -695,10 +1006,10 @@ public:
         {
             for(const auto &item : job.extendedData.headers)
             {
-                req->requestHeaders.push_back({ item.first, item.second });
+                req->requestHeaders.push_back({ item.first, Chronos::Utils::replaceVariables(item.second) });
             }
 
-            req->requestBody = job.extendedData.body;
+            req->requestBody = Chronos::Utils::replaceVariables(job.extendedData.body);
         }
 
         //! @todo X-Forwarded-For, User-Agent for test run
@@ -714,34 +1025,34 @@ public:
         return req;
     }
 
-    void submitJobTestRun(TestRunHandle &_return, const Job &job, const std::string &xForwardedFor)
+    void submitJobTestRun(TestRunHandle &_return, const Job &job, const std::string &xForwardedFor) override
     {
         std::cout << "ChronosNodeHandler::submitJobTestRun()" << std::endl;
 
         Chronos::TestRunThread *testRunThread = Chronos::TestRunThread::getInstance();
         if(testRunThread == nullptr)
-            throw FeatureNotAvailable();
+            Chronos::RpcThrow::featureNotAvailable();
 
         std::unique_ptr<Chronos::HTTPRequest> request = httpRequestFromJob(job);
         if(request == nullptr)
-            throw InvalidArguments();
+            Chronos::RpcThrow::invalidArguments();
 
         request->xForwardedFor = xForwardedFor;
 
         _return = testRunThread->submit(std::move(request));
     }
 
-    void getJobTestRunStatus(TestRunStatus &_return, const TestRunHandle &handle)
+    void getJobTestRunStatus(TestRunStatus &_return, const TestRunHandle &handle) override
     {
         std::cout << "ChronosNodeHandler::getJobTestRunStatus(" << handle << ")" << std::endl;
 
         Chronos::TestRunThread *testRunThread = Chronos::TestRunThread::getInstance();
         if(testRunThread == nullptr)
-            throw FeatureNotAvailable();
+            Chronos::RpcThrow::featureNotAvailable();
 
         Chronos::TestRun::Status status = testRunThread->getStatus(handle);
         if(!status)
-            throw InvalidArguments();
+            Chronos::RpcThrow::invalidArguments();
 
         using trs = Chronos::TestRun::Status::State;
         switch(status.state)
@@ -767,6 +1078,7 @@ public:
         _return.httpStatus          = status.httpStatus;
         _return.peerAddress         = status.peerAddress;
         _return.peerPort            = status.peerPort;
+        _return.sslCertExpiry       = status.sslCertExpiry;
         _return.headers             = status.headers;
         _return.body                = status.body;
         _return.stats.nameLookup    = status.timeNameLookup;
@@ -777,18 +1089,27 @@ public:
         _return.stats.total         = status.timeTotal;
     }
 
-    void deleteJobTestRun(const TestRunHandle &handle)
+    void deleteJobTestRun(const TestRunHandle &handle) override
     {
         std::cout << "ChronosNodeHandler::deleteJobTestRun(" << handle << ")" << std::endl;
 
         Chronos::TestRunThread *testRunThread = Chronos::TestRunThread::getInstance();
         if(testRunThread == nullptr)
-            throw FeatureNotAvailable();
+            Chronos::RpcThrow::featureNotAvailable();
 
         testRunThread->remove(handle);
     }
 
 private:
+    int64_t getExpiryCompareVal(time_t forTime) const
+    {
+        struct tm t = { 0 };
+        if(gmtime_r(&forTime, &t) == nullptr)
+            throw std::runtime_error("gmtime_r returned nullptr");
+        const int64_t expiryCompareVal = (t.tm_year + 1900) * 10000000000 + (t.tm_mon + 1) * 100000000 + t.tm_mday * 1000000 + t.tm_hour * 10000 + t.tm_min * 100;
+        return expiryCompareVal;
+    }
+
     void getDayTimeSeriesForYear(std::vector<TimeSeriesDataEntry> &dest, const JobIdentifier &identifier, const int year, const int minMonth = 0, const int minDay = 1, const double p = 0.99) const
     {
         using namespace Chronos;
@@ -835,6 +1156,8 @@ private:
     template<std::size_t N_BINS>
     double computerPercentileFromHistogramRow(const std::unique_ptr<Chronos::SQLite_Statement> &stmt, double p = 0.99) const
     {
+        static const double SQRT_2 = sqrt(2);
+
         int binSum = 0;
         std::vector<int> binValues(N_BINS);
 
@@ -861,27 +1184,14 @@ private:
 
             if (p > prevEcdf && p <= curEcdf)
             {
-                double x0 = i > 0 ? pow(sqrt(2), i - 1) : 0;
-                double x1 = pow(sqrt(2), i);
+                double x0 = i > 0 ? pow(SQRT_2, i - 1) : 0;
+                double x1 = pow(SQRT_2, i);
 
                 return (x0 + (x1 - x0) * (p - prevEcdf) / (curEcdf - prevEcdf));
             }
         }
 
         return 0.;
-    }
-
-    template<typename T>
-    void getJobSchedule(std::unique_ptr<Chronos::MySQL_DB> &db, const JobIdentifier &identifier, const char *name, std::set<T> &target) const
-    {
-        MYSQL_ROW row;
-        auto res = db->query("SELECT `%s` FROM `job_%ss` WHERE `jobid`=%v",
-            name, name,
-            identifier.jobId);
-        while((row = res->fetchRow()))
-        {
-            target.insert(std::stoi(row[0]));
-        }
     }
 
     template<typename T>
@@ -898,6 +1208,39 @@ private:
                 identifier.jobId,
                 val);
         }
+    }
+
+    template<typename T>
+    bool isWildcardSet(const std::set<T> &items) const
+    {
+        return items.size() == 1 && items.find(-1) != items.end();
+    }
+
+    double calculateScheduleLoad(const JobSchedule &schedule) const
+    {
+        double load =
+                (isWildcardSet(schedule.hours)      ? 24    : schedule.hours.size())
+            *   (isWildcardSet(schedule.minutes)    ? 60    : schedule.minutes.size())
+            *   (isWildcardSet(schedule.months)     ? 12    : schedule.months.size());
+        if(isWildcardSet(schedule.mdays) && isWildcardSet(schedule.wdays))
+        {
+            load *= 31;
+        }
+        else if(isWildcardSet(schedule.mdays) && !isWildcardSet(schedule.wdays))
+        {
+            load *= schedule.wdays.size();
+        }
+        else if(!isWildcardSet(schedule.mdays) && isWildcardSet(schedule.wdays))
+        {
+            load *= schedule.mdays.size();
+        }
+        else
+        {
+            load *= std::min<std::size_t>(schedule.mdays.size() + schedule.wdays.size(), 31);
+        }
+        load /= (24 * 60 * 12 * 31);
+
+        return load;
     }
 
     long long jobUserId(std::unique_ptr<Chronos::MySQL_DB> &db, const long long jobId) const
@@ -927,6 +1270,42 @@ private:
         return tmStruct;
     }
 
+    void getTimeSeriesForDay(std::vector<TimeSeriesDataEntry> &_return, const JobIdentifier &identifier, const int mday, const int month, const time_t minDate) const
+    {
+        using namespace Chronos;
+
+        std::string dbFilePath = Utils::userDbFilePath(userDbFilePathScheme, userDbFileNameScheme, identifier.userId, mday, month);
+        std::unique_ptr<SQLite_DB> userDB;
+
+        try
+        {
+            userDB = std::make_unique<SQLite_DB>(dbFilePath.c_str(), true /* read only */);
+        }
+        catch(const std::exception &ex)
+        {
+            //! @note Ignore failures during open (the db probably doesn't exist because there's no log entry on that day)
+            return;
+        }
+
+        std::string query = "SELECT \"joblog\".\"date\",\"joblog\".\"status\",\"total\" FROM \"joblog\" "
+            "LEFT JOIN \"joblog_stats\" ON \"joblog_stats\".\"joblogid\"=\"joblog\".\"joblogid\" "
+            "WHERE \"joblog\".\"jobid\"=:jobid AND \"joblog\".\"date\">=:mindate";
+
+        auto stmt = userDB->prepare(query);
+        stmt->bind(":jobid", identifier.jobId);
+        stmt->bind(":mindate", std::to_string(static_cast<uint64_t>(minDate)));
+
+        while(stmt->execute())
+        {
+            TimeSeriesDataEntry td;
+            td.date = stmt->intValue("date");
+            td.uptimeCounter = (static_cast<JobStatus::type>(stmt->intValue("status")) == JobStatus::OK) ? 1 : 0;
+            td.uptimeDenominator = 1;
+            td.duration = stmt->intValue("total") / 1000;
+            _return.push_back(td);
+        }
+    }
+
     void getJobLogForDay(std::vector<JobLogEntry> &_return, const JobIdentifier &identifier, const int mday, const int month, const int16_t maxEntries) const
     {
         using namespace Chronos;
@@ -947,8 +1326,19 @@ private:
             return;
         }
 
-        std::string query = "SELECT \"joblog\".\"joblogid\",\"joblog\".\"jobid\",\"joblog\".\"date\",\"date_planned\",\"jitter\",\"url\",\"duration\",\"joblog\".\"status\",\"status_text\",\"http_status\",\"name_lookup\",\"connect\",\"app_connect\",\"pre_transfer\",\"start_transfer\",\"total\" FROM \"joblog\" "
+        const int schemaVersion = getUserDbSchemaVersion(*userDB);
+
+        std::string query = "SELECT \"joblog\".\"joblogid\",\"joblog\".\"jobid\",\"joblog\".\"date\",\"date_planned\",\"jitter\",\"url\",\"duration\",\"joblog\".\"status\",\"status_text\",\"http_status\",\"name_lookup\",\"connect\",\"app_connect\",\"pre_transfer\",\"start_transfer\",\"total\"";
+        if(schemaVersion >= USER_DB_SCHEMA_SSL)
+        {
+            query += ",\"ssl_cert_expiry\"";
+        }
+        query += " FROM \"joblog\" "
             "LEFT JOIN \"joblog_stats\" ON \"joblog_stats\".\"joblogid\"=\"joblog\".\"joblogid\" ";
+        if(schemaVersion >= USER_DB_SCHEMA_SSL)
+        {
+            query += "LEFT JOIN \"joblog_ssl\" ON \"joblog_ssl\".\"joblogid\"=\"joblog\".\"joblogid\" ";
+        }
         if(identifier.jobId > 0)
         {
             query += "WHERE \"joblog\".\"jobid\"=:jobid ";
@@ -999,6 +1389,12 @@ private:
             entry.__isset.stats         = true;
         }
 
+        if(stmt->hasField("ssl_cert_expiry") && !stmt->isNull("ssl_cert_expiry"))
+        {
+            entry.sslCertExpiry         = stmt->intValue("ssl_cert_expiry");
+            entry.__isset.sslCertExpiry = true;
+        }
+
         return entry;
     }
 
@@ -1012,13 +1408,16 @@ private:
 namespace Chronos {
 
 NodeService::NodeService(const std::string &interface, int port)
-    : server(std::make_shared<TThreadedServer>(
-        std::make_shared<ChronosNodeProcessor>(std::make_shared<ChronosNodeHandler>()),
+{
+    auto handler = std::make_shared<ChronosNodeHandler>();
+    auto processor = std::make_shared<ChronosNodeProcessor>(handler);
+    processor->setEventHandler(std::make_shared<RpcMetricsProcessorEventHandler>("node"));
+    server = std::make_shared<TThreadedServer>(
+        processor,
         std::make_shared<TServerSocket>(interface, port),
         std::make_shared<TBufferedTransportFactory>(),
         std::make_shared<TBinaryProtocolFactory>()
-    ))
-{
+    );
 }
 
 void NodeService::run()

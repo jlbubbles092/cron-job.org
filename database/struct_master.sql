@@ -1,3 +1,8 @@
+CREATE TABLE `banned_email_domain`(
+  `domain` varchar(255) NOT NULL,
+  PRIMARY KEY(`domain`)
+);
+
 CREATE TABLE `nodestats`(
   `nodeid` int(11) NOT NULL,
   `d` tinyint(4) NOT NULL DEFAULT '0',
@@ -29,6 +34,9 @@ CREATE TABLE `user` (
   `lastlogin_lang` varchar(4) NOT NULL DEFAULT 'de',
   `timezone` varchar(32) NOT NULL DEFAULT 'Europe/Berlin',
   `newsletter_subscribe` enum('yes', 'no', 'undefined') NOT NULL DEFAULT 'undefined',
+  `notifications_auto_disabled` tinyint(4) NOT NULL DEFAULT 0,
+  `last_password_change` int(11) NOT NULL DEFAULT '0',
+  `email_notifications_enabled` tinyint(4) NOT NULL DEFAULT 1,
   PRIMARY KEY (`userid`),
   KEY `email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
@@ -43,6 +51,12 @@ CREATE TABLE `user_pwreset` (
   KEY `expires` (`expires`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
+CREATE TABLE `user_schedule_load` (
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `load` FLOAT NOT NULL,
+  PRIMARY KEY(`userid`)
+) ENGINE=InnoDB;
+
 CREATE TABLE `usergroup`(
     `usergroupid` int(11) NOT NULL AUTO_INCREMENT,
     `title` varchar(128) NOT NULL DEFAULT '',
@@ -53,16 +67,34 @@ CREATE TABLE `usergroup`(
     `request_max_size` int(11) NOT NULL DEFAULT '8192',
     `max_failures` int(11) NOT NULL DEFAULT 15,
     `execution_priority` tinyint(4) NOT NULL DEFAULT 0,
+    `api_requests_per_day` int(11) NOT NULL DEFAULT '100',
+    `max_api_keys` int(11) NOT NULL DEFAULT '1',
+    `max_notification_channels` int(11) NOT NULL DEFAULT '1',
+    `enable_waf_validator` tinyint(4) NOT NULL DEFAULT '1',
     PRIMARY KEY(`usergroupid`)
 ) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 INSERT INTO `usergroup`(`usergroupid`, `title`) VALUES(1, 'Default');
+
+CREATE TABLE `notificationchannel`(
+    `channelid` int(11) NOT NULL AUTO_INCREMENT,
+    `userid` int(11) NOT NULL DEFAULT 0,
+    `type` tinyint(4) NOT NULL DEFAULT 0,
+    `destination` varchar(255) NOT NULL DEFAULT '',
+    `enabled` tinyint(4) NOT NULL DEFAULT 0,
+    `confirmed` tinyint(4) NOT NULL DEFAULT 0,
+    `settings` text NOT NULL,
+    PRIMARY KEY(`channelid`),
+    KEY(`userid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 CREATE TABLE `node`(
     `nodeid` int(11) NOT NULL AUTO_INCREMENT,
     `name` varchar(128) NOT NULL DEFAULT '',
     `ip` varchar(32) NOT NULL DEFAULT '',
+    `public_ip` varchar(32) NOT NULL DEFAULT '',
     `port` int(11) NOT NULL DEFAULT 9090,
     `enabled` tinyint(4) NOT NULL DEFAULT '1',
+    `load_24h` tinyint(255) NOT NULL DEFAULT '0',
     PRIMARY KEY(`nodeid`)
 ) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 INSERT INTO `node`(`nodeid`,`name`,`ip`,`port`) VALUES(1, 'Local Node', '127.0.0.1',9090);
@@ -102,6 +134,7 @@ CREATE TABLE `userdeletelog` (
 
 CREATE TABLE `refreshtoken`(
     `token` varchar(64) NOT NULL DEFAULT '',
+    `token_hashed` TINYINT(1) NOT NULL DEFAULT 0,
     `userid` int(11) NOT NULL DEFAULT 0,
     `device` varchar(255) NOT NULL DEFAULT '',
     `expires` int(11) NOT NULL DEFAULT 0,
@@ -129,3 +162,155 @@ BEGIN
 END;
 $$
 DELIMITER ;
+
+CREATE TABLE `apikey` (
+  `apikeyid` int(11) NOT NULL AUTO_INCREMENT,
+  `apikey` varchar(255) NOT NULL DEFAULT '',
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `enabled` tinyint(4) NOT NULL DEFAULT '0',
+  `created` int(14) NOT NULL DEFAULT '0',
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `limit_ips` text NOT NULL,
+  PRIMARY KEY (`apikeyid`),
+  UNIQUE KEY `apikey` (`apikey`),
+  KEY `userid` (`userid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `apilog` (
+  `apilogid` int(11) NOT NULL AUTO_INCREMENT,
+  `apikeyid` int(11) NOT NULL DEFAULT '0',
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `ip` varchar(128) NOT NULL DEFAULT '',
+  `method` varchar(128) NOT NULL DEFAULT '',
+  `date` int(14) NOT NULL,
+  PRIMARY KEY (`apilogid`),
+  KEY `apikeyid` (`apikeyid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `mfadevice` (
+  `mfadeviceid` int(11) NOT NULL AUTO_INCREMENT,
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `enabled` tinyint(4) NOT NULL DEFAULT '0',
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `secret` varchar(255) NOT NULL DEFAULT '',
+  `type` tinyint(4) NOT NULL DEFAULT '0',
+  `created` int(14) NOT NULL DEFAULT '0',
+  `last_timeslot` int(14) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`mfadeviceid`),
+  KEY `userid` (`userid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `statuspage` (
+  `statuspageid` int(11) NOT NULL AUTO_INCREMENT,
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `enabled` tinyint(4) NOT NULL DEFAULT '1',
+  `uniqueid` varchar(8) NOT NULL DEFAULT '',
+  PRIMARY KEY (`statuspageid`),
+  UNIQUE KEY `uniqueid` (`uniqueid`),
+  KEY `userid` (`userid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `statuspagedomain` (
+  `domain` varchar(255) NOT NULL DEFAULT '',
+  `statuspageid` int(11) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`domain`),
+  KEY `statuspageid` (`statuspageid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `statuspagejob` (
+  `statuspagejobid` int(11) NOT NULL AUTO_INCREMENT,
+  `statuspageid` int(11) NOT NULL DEFAULT '0',
+  `position` tinyint(4) NOT NULL DEFAULT '0',
+  `jobid` int(11) NOT NULL DEFAULT '0',
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `enabled` tinyint(4) NOT NULL DEFAULT '1',
+  `threshold_uptime_warning` double NOT NULL DEFAULT '0.9',
+  `threshold_uptime_error` double NOT NULL DEFAULT '0.5',
+  `threshold_latency_warning` int(11) NOT NULL DEFAULT '2000',
+  `threshold_latency_error` int(11) NOT NULL DEFAULT '20000',
+  `percentile` double NOT NULL DEFAULT '0.9',
+  PRIMARY KEY (`statuspagejobid`),
+  KEY `statuspageid` (`statuspageid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `statuspagelogo` (
+  `statuspageid` int(11) NOT NULL DEFAULT '0',
+  `logo` mediumblob NOT NULL,
+  `mimetype` varchar(128) NOT NULL DEFAULT '',
+  PRIMARY KEY (`statuspageid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `statuspageincident` (
+  `statuspageincidentid` int(11) NOT NULL AUTO_INCREMENT,
+  `statuspageid` int(11) NOT NULL DEFAULT '0',
+  `title` varchar(255) NOT NULL DEFAULT '',
+  `description` text NOT NULL,
+  `start_date` int(11) NOT NULL DEFAULT '0',
+  `closed_at` int(11) NOT NULL DEFAULT '0',
+  `status` tinyint(4) NOT NULL DEFAULT '1',
+  PRIMARY KEY (`statuspageincidentid`),
+  KEY `statuspageid` (`statuspageid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `user_subscription` (
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `product_id` varchar(64) NOT NULL DEFAULT '',
+  `subscription_id` varchar(255) NOT NULL DEFAULT '',
+  `current_period_start` int(11) NOT NULL DEFAULT '0',
+  `current_period_end` int(11) NOT NULL DEFAULT '0',
+  `cancel_at` int(11) NOT NULL DEFAULT '0',
+  `status` tinyint(4) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`userid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `user_paddle_subscription` (
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `product_id` varchar(64) NOT NULL DEFAULT '',
+  `subscription_id` varchar(255) NOT NULL DEFAULT '',
+  `current_period_start` int(11) NOT NULL DEFAULT '0',
+  `current_period_end` int(11) NOT NULL DEFAULT '0',
+  `cancel_at` int(11) NOT NULL DEFAULT '0',
+  `status` tinyint(4) NOT NULL DEFAULT '0',
+  `updated` int(11) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`userid`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `user_paddle_mapping` (
+  `userid` int(11) NOT NULL DEFAULT '0',
+  `paddle_customer_id` varchar(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`userid`),
+  UNIQUE KEY `paddle_customer_id` (`paddle_customer_id`)
+) DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+CREATE TABLE `folder` (
+  `folderid` int(11) NOT NULL AUTO_INCREMENT,
+  `userid` int(11) NOT NULL,
+  `title` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  PRIMARY KEY (`folderid`),
+  KEY `userid` (`userid`),
+  UNIQUE KEY `user_folder_title` (`userid`, `title`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `bouncelog` (
+  `bouncelogid` bigint NOT NULL AUTO_INCREMENT,
+  `type` varchar(32) NOT NULL DEFAULT '',
+  `arg` varchar(64) NOT NULL DEFAULT '',
+  `received` bigint NOT NULL DEFAULT '0',
+  `userid` int NOT NULL DEFAULT '0',
+  `jobid` int NOT NULL DEFAULT '0',
+  `notification_type` tinyint NOT NULL DEFAULT '0',
+  `notificationchannelid` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`bouncelogid`),
+  KEY `userid` (`userid`),
+  KEY `jobid` (`jobid`),
+  KEY `notificationchannelid` (`notificationchannelid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `bouncemessage` (
+  `bouncelogid` bigint NOT NULL,
+  `body` text,
+  `sender` varchar(255) NOT NULL,
+  `recipient` varchar(255) NOT NULL,
+  PRIMARY KEY (`bouncelogid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

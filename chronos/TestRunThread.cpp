@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2021 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2021-2025 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -11,13 +11,17 @@
 
 #include "TestRunThread.h"
 
+#include <cerrno>
 #include <ctime>
 #include <iostream>
-#include <random>
+#include <stdexcept>
+#include <sys/random.h>
 
 #include "App.h"
 #include "CurlWorker.h"
 #include "Utils.h"
+#include "Metrics.h"
+#include "MetricsLabels.h"
 
 using namespace Chronos;
 
@@ -28,13 +32,30 @@ struct HandleGenerator
     static std::string generate()
     {
         std::string result;
-        result.resize(LENGTH);
+        result.reserve(LENGTH);
 
+        unsigned char buffer[LENGTH];
+        while(result.size() < LENGTH)
         {
-            std::unique_lock<std::mutex> lock(rngMutex);
-            for(std::size_t i = 0; i < LENGTH; ++i)
+            std::size_t filled = 0;
+            while(filled < sizeof(buffer))
             {
-                result[i] = CHARS[dist(rng)];
+                const ssize_t n = getrandom(buffer + filled, sizeof(buffer) - filled, 0);
+                if(n > 0)
+                {
+                    filled += static_cast<std::size_t>(n);
+                    continue;
+                }
+                if(n < 0 && errno == EINTR)
+                    continue;
+                throw std::runtime_error("Failed to generate random test run handle");
+            }
+
+            for(std::size_t i = 0; i < sizeof(buffer) && result.size() < LENGTH; ++i)
+            {
+                // Rejecting bytes >= UNBIASED_BYTE_LIMIT keeps the modulo mapping uniform
+                if(buffer[i] < UNBIASED_BYTE_LIMIT)
+                    result.push_back(CHARS[buffer[i] % NUM_CHARS]);
             }
         }
 
@@ -44,15 +65,11 @@ struct HandleGenerator
 private:
     static constexpr const std::size_t LENGTH = 64;
     static constexpr const char CHARS[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-=?:!()*$";
-    static std::mutex rngMutex;
-    static std::mt19937 rng;
-    static std::uniform_int_distribution<> dist;
+    static constexpr const std::size_t NUM_CHARS = sizeof(CHARS) - 1;
+    static constexpr const std::size_t UNBIASED_BYTE_LIMIT = 256 - (256 % NUM_CHARS);
 };
 
 constexpr const char HandleGenerator::CHARS[];
-std::mutex HandleGenerator::rngMutex;
-std::mt19937 HandleGenerator::rng{std::random_device{}()};
-std::uniform_int_distribution<> HandleGenerator::dist(0, sizeof(HandleGenerator::CHARS)-2);
 
 const int TESTRUN_RESULT_EXPIRY_SECONDS = 60;
 
@@ -68,13 +85,19 @@ TestRunThread::TestRunThread()
 
     TestRunThread::instance = this;
 
+    queueProcessingTrigger = curlWorker->addAsyncWatcher([this] () {
+        processQueue(false);
+    });
+
+    stopTrigger = curlWorker->addAsyncWatcher([this] () {
+        curlWorker->stop();
+    });
+
     curlWorker->onDone([this] (CURL *easy, CURLcode res) {
         HTTPRequest *req = nullptr;
         if(curl_easy_getinfo(easy, CURLINFO_PRIVATE, &req) != CURLE_OK || req == nullptr)
             throw std::runtime_error("Failed to retrieve associated HTTPRequest!");
         req->done(res);
-
-        processQueue(false);
     });
 }
 
@@ -93,7 +116,8 @@ TestRunThread *TestRunThread::getInstance()
 void TestRunThread::stopThread()
 {
     stop = true;
-    curlWorker->stop();
+
+    stopTrigger->fire();
 }
 
 void TestRunThread::run()
@@ -103,7 +127,6 @@ void TestRunThread::run()
     stop = false;
     while(!stop)
     {
-        processQueue(true);
         curlWorker->run();
     }
 
@@ -134,13 +157,15 @@ void TestRunThread::processQueue(bool wait)
     decltype(queue) tempQueue;
     {
         std::unique_lock<std::mutex> lock(queueMutex);
-        if(wait && queue.empty())
-            queueSignal.wait(lock);
+        if(stop)
+            return;
         queue.swap(tempQueue);
+        Metrics::instance().setTestrunQueueDepth(static_cast<double>(queue.size()));
     }
 
     if(!tempQueue.empty())
     {
+        Metrics::instance().setTestrunQueueDepth(static_cast<double>(tempQueue.size()));
         while(!tempQueue.empty())
         {
             std::shared_ptr<TestRun> testRun = std::move(tempQueue.front());
@@ -188,6 +213,7 @@ void TestRunThread::processQueue(bool wait)
                         testRun->status.statusText          = testRun->request->result->statusText;
                         testRun->status.peerAddress         = testRun->request->result->peerAddress;
                         testRun->status.peerPort            = testRun->request->result->peerPort;
+                        testRun->status.sslCertExpiry       = testRun->request->result->sslCertExpiry;
                         testRun->status.duration            = testRun->request->result->duration;
                         testRun->status.headers             = testRun->request->result->responseHeaders;
                         testRun->status.body                = testRun->request->result->responseBody;
@@ -200,6 +226,8 @@ void TestRunThread::processQueue(bool wait)
                         testRun->expiresAt                  = std::time(nullptr) + TESTRUN_RESULT_EXPIRY_SECONDS;
 
                         runningTestRuns.erase(testRun);
+                        Metrics::instance().incrementTestrunCompleted(MetricsLabels::statusLabel(testRun->status.result));
+                        Metrics::instance().setTestrunActive(static_cast<double>(runningTestRuns.size()));
                     }
                 };
                 {
@@ -207,8 +235,13 @@ void TestRunThread::processQueue(bool wait)
                     testRun->status.state = TestRun::Status::State::Connecting;
                 }
                 runningTestRuns.insert(testRun);
+                Metrics::instance().setTestrunActive(static_cast<double>(runningTestRuns.size()));
                 testRun->request->submit(curlWorker.get());
             }
+        }
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            Metrics::instance().setTestrunQueueDepth(static_cast<double>(queue.size()));
         }
     }
 }
@@ -229,8 +262,12 @@ TestRunThread::Handle TestRunThread::submit(std::unique_ptr<HTTPRequest> &&reque
     {
         std::unique_lock<std::mutex> lock(queueMutex);
         queue.push(testRun);
-        queueSignal.notify_one();
+        Metrics::instance().setTestrunQueueDepth(static_cast<double>(queue.size()));
     }
+
+    Metrics::instance().incrementTestrunSubmitted();
+
+    queueProcessingTrigger->fire();
 
     return handle;
 }

@@ -1,7 +1,7 @@
 cron-job.org
 ============
 
-[![Build Status](https://app.travis-ci.com/pschlan/cron-job.org.svg?branch=master)](https://app.travis-ci.com/pschlan/cron-job.org)
+![Build Status](https://github.com/pschlan/cron-job.org/actions/workflows/chronos.yml/badge.svg) ![Build Status](https://github.com/pschlan/cron-job.org/actions/workflows/docs.prod.yml/badge.svg) ![Build Status](https://github.com/pschlan/cron-job.org/actions/workflows/frontend.prod.yml/badge.svg)  ![Build Status](https://github.com/pschlan/cron-job.org/actions/workflows/statuspage.prod.yml/badge.svg)
 
 Structure
 ---------
@@ -86,6 +86,66 @@ The status page frontend is written in JavaScript using React and material-ui. Y
 * Install all required dependencies by running `npm install`
 * Create a copy of `src/utils/Config.default.js` as `src/utils/Config.js` and customize it according to your environment
 * Run the web interface via `npm start`
+
+Example Environment (using Docker Compose)
+--------------------
+To quickly start an example environment of most of the cron-job.org system, you can use `docker-compose`:
+* Initialize/update submodules: `git submodule init && git submodule update`
+* Copy `.env.example` to `.env` and open it in a text editor
+* Change the variables in `.env` as desired. As an absolute minimum, fill the `*_SECRET` variables with randomly generated secrets and specify a SMTP server in `SMTP_SERVER`. No authentication is used for the SMTP session, so ensure that the SMTP server is allowing relaying for your machine's IP address.
+* Start via `docker compose up` and wait until all containers are built and all services have been started. This can take a while, especially on first run.
+* Open `http://localhost:8010/` in your browser (assuming you kept the default port and host name settings).
+
+*Important:* The Docker environment contained in this repo is intended as an example / development environment and is not tailored for production usage, especially with regard to security.
+
+### Development mode (live reloading)
+
+The default `docker compose up` builds the `frontend` and `statuspage` as static
+production bundles served by nginx, which is not convenient while actively
+developing them. For development, a `docker-compose.dev.yml` override is provided
+that runs the frontend and status page via the React development server
+(`npm start`) with the source code live-mounted from the repository, so changes
+are reflected immediately (including hot module reloading). The PHP API source
+is live-mounted as well, so API changes take effect without rebuilding.
+
+Start the development environment with:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Or use the helper script: `./dev.sh`
+
+Then open `http://localhost:8010/` as usual.
+
+Notes:
+* Dev mode uses separate Docker image tags (`cron-joborg-frontend-dev`,
+  `cron-joborg-statuspage-dev`) so it does not reuse the production nginx
+  images from a plain `docker compose up`.
+* The first start installs the npm dependencies inside the container and runs an
+  initial build; this can take a while. Until the dev servers report
+  `Compiled successfully!` (visible in the `frontend`/`statuspage` logs), the
+  web server will respond with a "Bad Gateway" error. Subsequent starts reuse
+  the cached dependencies and are much faster.
+* If you see `npm: command not found` in the `frontend` or `statuspage` logs,
+  the containers are running stale production images. Rebuild with
+  `docker compose -f docker-compose.yml -f docker-compose.dev.yml build frontend statuspage`
+  or add `--build` to your `up` command.
+* `src/utils/Config.js` for the frontend and status page is generated
+  automatically inside the container from the `.env` settings (it is gitignored
+  and your working tree is not modified).
+* All other services (databases, redis, chronos) behave exactly as in the
+  normal setup; only the `frontend`, `statuspage`, `api` and `www` services are
+  adjusted for development.
+
+The following containers will be started:
+* `mysql-master` for the master service database which also stores users, groups, job -> node associations etc.
+* `mysql-node` for the node service database. Used to store per-executor information like job details with their schedules, etc.
+* `redis` used as a cache for certain features like rate limiting.
+* `api` for the PHP-based API backend used by the frontend. Uses php-fpm.
+* `frontend` which hosts the built frontend code.
+* `wwww` as the frontend nginx-powered HTTP server which connects to `frontend` (HTTP reverse proxy) and `api` (FastCGI).
+* `chronos` which runs chronos in a combined master and node service mode.
 
 General notes
 -------------

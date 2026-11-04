@@ -12,15 +12,22 @@
 #ifndef _APP_H_
 #define _APP_H_
 
+#include <cstdint>
 #include <memory>
+#include <map>
 #include <thread>
+#include <unordered_set>
 #include <vector>
+#include <atomic>
 
 #include <time.h>
+#include <sys/socket.h>
 
 #include "MySQL.h"
 #include "Config.h"
 #include "Utils.h"
+
+#include "ScheduleMetricsBatch.h"
 
 class UserGroup;
 
@@ -33,6 +40,7 @@ namespace Chronos
 	class NodeService;
 	class TestRunThread;
 	class MasterService;
+	class MetricsExposer;
 	class HTTPRequest;
 
 	class App
@@ -61,6 +69,7 @@ namespace Chronos
 		std::unique_ptr<MySQL_DB> createMySQLConnection();
 		std::unique_ptr<MySQL_DB> createMasterMySQLConnection();
 		UserGroup getUserGroupById(uint64_t userGroupId);
+		void markJobDirty(int64_t jobId);
 
 	private:
 		void startUpdateThread();
@@ -73,18 +82,27 @@ namespace Chronos
 		void stopTestRunThread();
 		void startMasterServiceThread();
 		void stopMasterServiceThread();
+		void startMetricsExposer();
+		void stopMetricsExposer();
 		void processJobs(time_t forTime, time_t plannedTime);
 		void processJobsForTimeZone(int hour, int minute, int month, int mday, int wday, int year, time_t timestamp, const std::string &timeZone,
-									std::map<uint8_t, std::vector<HTTPRequest *>> &requestsByPriority);
+									std::map<uint8_t, std::vector<std::unique_ptr<HTTPRequest>>> &requestsByPriority,
+									ScheduleMetricsBatch &scheduleBatch,
+									const std::unordered_set<int64_t> *jobIdFilter = nullptr);
+		void refreshDirtyJobs(time_t forTime, time_t plannedTime,
+									std::map<uint8_t, std::vector<std::unique_ptr<HTTPRequest>>> &requestsByPriority,
+									ScheduleMetricsBatch &scheduleBatch,
+									const std::unordered_set<int64_t> &dirtyJobIds);
 		void cleanUpNotifications();
 		void syncUserGroups();
 
 	public:
 		std::shared_ptr<Config> config;
 		bool isIpAddressBlocked(in_addr_t ipAddress) const;
+		bool verifyPeerAddress(unsigned int addressLength, const struct sockaddr *address) const;
 
 	private:
-		bool stop = false;
+		std::atomic<bool> stop{false};
 		static App *instance;
 		std::unique_ptr<Private> priv;
 		std::thread updateThread;
@@ -98,6 +116,7 @@ namespace Chronos
 		std::unique_ptr<NodeService> nodeServiceObj;
 		std::unique_ptr<TestRunThread> testRunThreadObj;
 		std::unique_ptr<MasterService> masterServiceObj;
+		std::unique_ptr<MetricsExposer> metricsExposerObj;
 		std::vector<Utils::Subnet> blockedSubnets;
 	};
 };

@@ -4,7 +4,14 @@ require_once('lib/ChronosClient.php');
 require_once('lib/ExecutionPredictor.php');
 require_once('lib/RedisConnection.php');
 require_once('lib/Exceptions.php');
+require_once('resources/User.php');
 require_once('Node.php');
+
+class JobStatusBadgeOptions {
+  const WITH_TITLE = (1 << 0);
+  const WITH_LAST_EXECUTION_DATE = (1 << 1);
+  const WITH_LATENCY = (1 << 2);
+}
 
 class CannotDeleteMonitorJobException extends Exception {}
 
@@ -15,12 +22,51 @@ class JobSchedule {
   public $minutes = [];
   public $months = [];
   public $wdays = [];
+  public $expiresAt;
 }
 
 class JobNotification {
   public $onFailure = false;
+  public $onFailureCount = 1;
   public $onSuccess = false;
   public $onDisable = false;
+  public $onSslCertExpiry = false;
+  public $onSslCertExpirySeconds = 604800;
+  public $mode = \chronos\JobNotificationMode::ALL;
+  public $selectedChannels = [];
+
+  public static function normalizeMode($mode) {
+    $mode = intval($mode);
+    if (in_array($mode, [
+      \chronos\JobNotificationMode::NONE,
+      \chronos\JobNotificationMode::ALL,
+      \chronos\JobNotificationMode::SELECTED
+    ], true)) {
+      return $mode;
+    }
+    return \chronos\JobNotificationMode::ALL;
+  }
+
+  public static function normalizeSelectedChannels($channels) {
+    if (!is_array($channels)) {
+      return [];
+    }
+
+    $result = [];
+    $seen = [];
+    foreach ($channels as $channelId) {
+      if (!is_numeric($channelId)) {
+        continue;
+      }
+      $channelId = intval($channelId);
+      if ($channelId < 0 || isset($seen[$channelId])) {
+        continue;
+      }
+      $seen[$channelId] = true;
+      $result[] = $channelId;
+    }
+    return $result;
+  }
 }
 
 class JobAuthentication {
@@ -43,6 +89,7 @@ class Job {
   public $lastStatus;
   public $lastDuration;
   public $lastExecution;
+  public $sslCertExpiry;
   public $nextExecution;
 
   public $auth;
@@ -51,6 +98,8 @@ class Job {
 
   public $type;
   public $requestTimeout;
+  public $redirectSuccess;
+  public $folderId;
 
   private $node;
 
@@ -70,6 +119,8 @@ class Job {
     $result->saveResponses    = $job->metaData->saveResponses;
     $result->type             = $job->metaData->type;
     $result->requestTimeout   = $job->metaData->requestTimeout;
+    $result->redirectSuccess  = $job->metaData->redirectSuccess;
+    $result->folderId         = $job->metaData->folderId;
     $result->url              = $job->data->url;
     $result->requestMethod    = $job->data->requestMethod;
 
@@ -77,6 +128,9 @@ class Job {
       $result->lastStatus     = $job->executionInfo->lastStatus;
       $result->lastDuration   = $job->executionInfo->lastDuration;
       $result->lastExecution  = $job->executionInfo->lastFetch;
+      if (isset($job->executionInfo->sslCertExpiry) && $job->executionInfo->sslCertExpiry > 0) {
+        $result->sslCertExpiry = $job->executionInfo->sslCertExpiry;
+      }
     }
 
     if (isset($job->authentication)) {
@@ -90,7 +144,16 @@ class Job {
     if (isset($job->notification)) {
       $result->notification->onSuccess  = $job->notification->onSuccess;
       $result->notification->onFailure  = $job->notification->onFailure;
+      $result->notification->onFailureCount = $job->notification->onFailureCount;
       $result->notification->onDisable  = $job->notification->onDisable;
+      $result->notification->onSslCertExpiry = $job->notification->onSslCertExpiry;
+      $result->notification->onSslCertExpirySeconds = $job->notification->onSslCertExpirySeconds;
+      $result->notification->mode = isset($job->notification->mode)
+        ? JobNotification::normalizeMode($job->notification->mode)
+        : \chronos\JobNotificationMode::ALL;
+      $result->notification->selectedChannels = isset($job->notification->selectedChannels)
+        ? JobNotification::normalizeSelectedChannels($job->notification->selectedChannels)
+        : [];
     } else {
       unset($result->notification);
     }
@@ -102,6 +165,7 @@ class Job {
       $result->schedule->minutes    = array_keys($job->schedule->minutes);
       $result->schedule->months     = array_keys($job->schedule->months);
       $result->schedule->wdays      = array_keys($job->schedule->wdays);
+      $result->schedule->expiresAt  = $job->schedule->expiresAt;
     } else {
       unset($result->schedule);
     }
@@ -121,9 +185,13 @@ class Job {
       array_keys($job->schedule->mdays),
       array_keys($job->schedule->wdays),
       array_keys($job->schedule->hours),
-      array_keys($job->schedule->minutes)
+      array_keys($job->schedule->minutes),
+      $job->schedule->expiresAt
     );
-    $result->nextExecution  = $predictor->predictNextExecution(time());
+    $result->nextExecution  = $predictor->predictNextExecution(null);
+    if ($result->nextExecution === false) {
+      $result->nextExecution = null;
+    }
 
     return $result;
   }
@@ -140,6 +208,8 @@ class Job {
     $job->metaData->type            = $this->type;
     $job->metaData->userGroupId     = $userGroupId;
     $job->metaData->requestTimeout  = $this->requestTimeout;
+    $job->metaData->redirectSuccess = $this->redirectSuccess;
+    $job->metaData->folderId        = $this->folderId;
 
     $job->data                      = new \chronos\JobData;
     $job->data->url                 = $this->url;
@@ -154,6 +224,15 @@ class Job {
     $job->notification->onDisable   = $this->notification->onDisable;
     $job->notification->onSuccess   = $this->notification->onSuccess;
     $job->notification->onFailure   = $this->notification->onFailure;
+    $job->notification->onFailureCount = $this->notification->onFailureCount;
+    $job->notification->onSslCertExpiry = $this->notification->onSslCertExpiry;
+    $job->notification->onSslCertExpirySeconds = max(0, $this->notification->onSslCertExpirySeconds);
+    $job->notification->mode = JobNotification::normalizeMode(
+      isset($this->notification->mode) ? $this->notification->mode : \chronos\JobNotificationMode::ALL
+    );
+    $job->notification->selectedChannels = JobNotification::normalizeSelectedChannels(
+      isset($this->notification->selectedChannels) ? $this->notification->selectedChannels : []
+    );
 
     $job->schedule                  = new \chronos\JobSchedule;
     $job->schedule->hours           = $this->toThriftSet($this->schedule->hours,    0,  23);
@@ -161,7 +240,8 @@ class Job {
     $job->schedule->minutes         = $this->toThriftSet($this->schedule->minutes,  0,  59);
     $job->schedule->months          = $this->toThriftSet($this->schedule->months,   1,  12);
     $job->schedule->wdays           = $this->toThriftSet($this->schedule->wdays,    0,  6);
-    $job->schedule->timezone        = $this->schedule->timezone;
+    $job->schedule->timezone        = empty($this->schedule->timezone) ? 'UTC' : $this->schedule->timezone;
+    $job->schedule->expiresAt       = $this->schedule->expiresAt;
 
     $job->extendedData              = new \chronos\JobExtendedData;
     $job->extendedData->headers     = $this->extendedData->headers;
@@ -175,8 +255,16 @@ class Job {
     $this->title                      = empty($request->job->title) ? '' : trim($request->job->title);
     $this->saveResponses              = !!$request->job->saveResponses;
 
-    if(isset($request->job->requestTimeout)) {
+    if (isset($request->job->requestTimeout)) {
       $this->requestTimeout           = intval($request->job->requestTimeout);
+    }
+
+    if (isset($request->job->redirectSuccess)) {
+      $this->redirectSuccess          = boolval($request->job->redirectSuccess);
+    }
+
+    if (isset($request->job->folderId)) {
+      $this->folderId                 = intval($request->job->folderId);
     }
 
     $this->auth->enable               = !!$request->job->auth->enable;
@@ -184,8 +272,21 @@ class Job {
     $this->auth->password             = (string)$request->job->auth->password;
 
     $this->notification->onFailure    = !!$request->job->notification->onFailure;
+    if (isset($request->job->notification->onFailureCount)) {
+      $this->notification->onFailureCount = max(1, $request->job->notification->onFailureCount);
+    }
     $this->notification->onSuccess    = !!$request->job->notification->onSuccess;
     $this->notification->onDisable    = !!$request->job->notification->onDisable;
+    $this->notification->onSslCertExpiry = !!$request->job->notification->onSslCertExpiry;
+    if (isset($request->job->notification->onSslCertExpirySeconds)) {
+      $this->notification->onSslCertExpirySeconds = max(0, intval($request->job->notification->onSslCertExpirySeconds));
+    }
+    if (isset($request->job->notification->mode)) {
+      $this->notification->mode = JobNotification::normalizeMode($request->job->notification->mode);
+    }
+    if (isset($request->job->notification->selectedChannels)) {
+      $this->notification->selectedChannels = JobNotification::normalizeSelectedChannels($request->job->notification->selectedChannels);
+    }
 
     $this->url                        = trim($request->job->url);
     $this->requestMethod              = (int)$request->job->requestMethod;
@@ -195,21 +296,149 @@ class Job {
     $this->extendedData->headers      = array();
     foreach ((array)$request->job->extendedData->headers as $key => $value) {
       $key = trim(str_replace(array("\r", "\n"), '', $key));
-      if (empty($key)) {
+      $value = trim(str_replace(array("\r", "\n"), '', $value));
+      if (empty($key) || empty($value)) {
         continue;
       }
       $this->extendedData->headers[$key] = $value;
     }
 
-    if (in_array($request->job->schedule->timezone, DateTimeZone::listIdentifiers())) {
-      $this->schedule->timezone       = $request->job->schedule->timezone;
+    $timezone = trim($request->job->schedule->timezone);
+    if (in_array($timezone, DateTimeZone::listIdentifiers())) {
+      $this->schedule->timezone       = $timezone;
     }
 
+    if (isset($request->job->schedule->expiresAt)) {
+      $this->schedule->expiresAt      = $request->job->schedule->expiresAt;
+    } else {
+      $this->schedule->expiresAt      = 0;
+    }
     $this->schedule->hours            = $request->job->schedule->hours;
     $this->schedule->mdays            = $request->job->schedule->mdays;
     $this->schedule->minutes          = $request->job->schedule->minutes;
     $this->schedule->months           = $request->job->schedule->months;
     $this->schedule->wdays            = $request->job->schedule->wdays;
+  }
+
+  public function patchFromRequest($request) {
+    if (isset($request->job->enabled)) {
+      $this->enabled                    = !!$request->job->enabled;
+    }
+
+    if (isset($request->job->title)) {
+      $this->title                      = empty($request->job->title) ? '' : trim($request->job->title);
+    }
+
+    if (isset($request->job->saveResponses)) {
+      $this->saveResponses              = !!$request->job->saveResponses;
+    }
+
+    if (isset($request->job->requestTimeout)) {
+      $this->requestTimeout             = intval($request->job->requestTimeout);
+    }
+
+    if (isset($request->job->redirectSuccess)) {
+      $this->redirectSuccess            = intval($request->job->redirectSuccess);
+    }
+
+    if (isset($request->job->folderId)) {
+      $this->folderId                   = intval($request->job->folderId);
+    }
+
+    if (isset($request->job->auth) && isset($request->job->auth->enable)) {
+      $this->auth->enable               = !!$request->job->auth->enable;
+    }
+
+    if (isset($request->job->auth) && isset($request->job->auth->user)) {
+      $this->auth->user                 = (string)$request->job->auth->user;
+    }
+
+    if (isset($request->job->auth) && isset($request->job->auth->password)) {
+      $this->auth->password             = (string)$request->job->auth->password;
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onFailure)) {
+      $this->notification->onFailure    = !!$request->job->notification->onFailure;
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onFailureCount)) {
+      $this->notification->onFailureCount = max(1, $request->job->notification->onFailureCount);
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onSuccess)) {
+      $this->notification->onSuccess    = !!$request->job->notification->onSuccess;
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onDisable)) {
+      $this->notification->onDisable    = !!$request->job->notification->onDisable;
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onSslCertExpiry)) {
+      $this->notification->onSslCertExpiry = !!$request->job->notification->onSslCertExpiry;
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->onSslCertExpirySeconds)) {
+      $this->notification->onSslCertExpirySeconds = max(0, intval($request->job->notification->onSslCertExpirySeconds));
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->mode)) {
+      $this->notification->mode = JobNotification::normalizeMode($request->job->notification->mode);
+    }
+
+    if (isset($request->job->notification) && isset($request->job->notification->selectedChannels)) {
+      $this->notification->selectedChannels = JobNotification::normalizeSelectedChannels($request->job->notification->selectedChannels);
+    }
+
+    if (isset($request->job->url)) {
+      $this->url                        = trim($request->job->url);
+    }
+
+    if (isset($request->job->requestMethod)) {
+      $this->requestMethod              = (int)$request->job->requestMethod;
+    }
+
+    if (isset($request->job->extendedData) && isset($request->job->extendedData->body)) {
+      $this->extendedData->body         = (string)$request->job->extendedData->body;
+    }
+
+    if (isset($request->job->extendedData) && isset($request->job->extendedData->headers)) {
+      $this->extendedData->headers      = array();
+      foreach ((array)$request->job->extendedData->headers as $key => $value) {
+        $key = trim(str_replace(array("\r", "\n"), '', $key));
+        $value = trim(str_replace(array("\r", "\n"), '', $value));
+        if (empty($key) || empty($value)) {
+          continue;
+        }
+        $this->extendedData->headers[$key] = $value;
+      }
+    }
+
+    if (isset($request->job->schedule) && isset($request->job->schedule->timezone)) {
+      $timezone = trim($request->job->schedule->timezone);
+
+      if (in_array($timezone, DateTimeZone::listIdentifiers())) {
+        $this->schedule->timezone       = $timezone;
+      }
+    }
+
+    if (isset($request->job->schedule) && isset($request->job->schedule->expiresAt)) {
+      $this->schedule->expiresAt        = $request->job->schedule->expiresAt;
+    }
+    if (isset($request->job->schedule) && isset($request->job->schedule->hours)) {
+      $this->schedule->hours            = $request->job->schedule->hours;
+    }
+    if (isset($request->job->schedule) && isset($request->job->schedule->mdays)) {
+      $this->schedule->mdays            = $request->job->schedule->mdays;
+    }
+    if (isset($request->job->schedule) && isset($request->job->schedule->minutes)) {
+      $this->schedule->minutes          = $request->job->schedule->minutes;
+    }
+    if (isset($request->job->schedule) && isset($request->job->schedule->months)) {
+      $this->schedule->months           = $request->job->schedule->months;
+    }
+    if (isset($request->job->schedule) && isset($request->job->schedule->wdays)) {
+      $this->schedule->wdays            = $request->job->schedule->wdays;
+    }
   }
 
   public static function createIdentifier($jobId, $userId) {
@@ -234,9 +463,11 @@ class Job {
 
 class JobManager {
   private $authToken;
+  private $mgmtMode;
 
-  function __construct($authToken) {
+  function __construct($authToken, $mgmtMode = false) {
     $this->authToken = $authToken;
+    $this->mgmtMode = $mgmtMode;
   }
 
   public function getJobs() {
@@ -251,7 +482,11 @@ class JobManager {
 
         $nodeJobs = $client->getJobsForUser($this->authToken->userId);
         foreach ($nodeJobs as $nodeJob) {
-          $jobs[] = Job::fromThriftJob($nodeJob, $node);
+          $convertedJob = Job::fromThriftJob($nodeJob, $node);
+          if ($this->mgmtMode) {
+            $convertedJob->nodeId = intval($node->nodeId);
+          }
+          $jobs[] = $convertedJob;
         }
       } catch (Exception $ex) {
         $someFailed = true;
@@ -272,6 +507,88 @@ class JobManager {
     ];
   }
 
+  private static function generatePublicJobStatusToken($jobId, $userId, $options) {
+    global $config;
+
+    $jobId = intval($jobId);
+    if ($jobId <= 0) {
+      throw new ValueError('Invalid job id!');
+    }
+
+    $userId = intval($userId);
+    if ($userId <= 0) {
+      throw new ValueError('Invalid user id!');
+    }
+
+    $options = intval($options);
+
+    if (empty($config['statusBadgeTokenSecret'])) {
+      throw new Exception('Status badge token secret is empty!');
+    }
+
+    $str = 'statusBadge:' . $userId . ':' . $jobId . ':' . $options;
+
+    $token = hash_hmac('sha256', $str, $config['statusBadgeTokenSecret']);
+    return substr($token, 0, $config['statusBadgeTokenLength']);
+  }
+
+  public static function getPublicJobStatus($jobId, $options, $token) {
+    $stmt = Database::get()->prepare('SELECT `nodeid` AS `nodeId`, `userid` AS `userId` FROM `job` WHERE `jobid`=:jobId');
+    $stmt->execute([':jobId' => $jobId]);
+    if ($jobMeta = $stmt->fetch(PDO::FETCH_OBJ)) {
+      $correctToken = self::generatePublicJobStatusToken($jobId, $jobMeta->userId, $options);
+      if (!hash_equals($correctToken, $token)) {
+        return false;
+      }
+
+      $node = NodeManager::getNodeByNodeId(intval($jobMeta->nodeId));
+      if (!$node) {
+        return false;
+      }
+
+      try {
+        $client = $node->connect();
+        $jobDetails = $client->getJobDetails(Job::createIdentifier($jobId, intval($jobMeta->userId)));
+        $status = (object)[
+          'enabled'       => boolval($jobDetails->metaData->enabled),
+          'lastStatus'    => $jobDetails->executionInfo->lastStatus,
+          'lastDuration'  => $jobDetails->executionInfo->lastDuration,
+          'lastFetch'     => $jobDetails->executionInfo->lastFetch,
+          'timezone'      => $jobDetails->schedule->timezone,
+          'title'         => $jobDetails->metaData->title
+        ];
+        if (isset($jobDetails->executionInfo->sslCertExpiry) && $jobDetails->executionInfo->sslCertExpiry > 0) {
+          $status->sslCertExpiry = $jobDetails->executionInfo->sslCertExpiry;
+        }
+        return $status;
+
+      } catch (Exception $ex) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  public function getPublicJobStatusBadgeURL($jobId, $options) {
+    global $config;
+
+    $jobId = intval($jobId);
+    $options = intval($options);
+
+    $job = $this->getJobDetails($jobId);
+    if (!$job) {
+      return false;
+    }
+
+    $token = self::generatePublicJobStatusToken($job->jobId, $this->authToken->userId, $options);
+
+    return sprintf($config['statusBadgeURL'],
+      $job->jobId,
+      $token,
+      $options);
+  }
+
   public function getJobDetails($jobId) {
     $node = (new NodeManager($this->authToken))->getJobNode($jobId);
     if (!$node) {
@@ -280,34 +597,89 @@ class JobManager {
 
     try {
       $client = $node->connect();
-      return Job::fromThriftJob($client->getJobDetails(Job::createIdentifier($jobId, $this->authToken->userId)), $node);
+      $convertedJob = Job::fromThriftJob($client->getJobDetails(Job::createIdentifier($jobId, $this->authToken->userId)), $node);
+      if ($this->mgmtMode) {
+        $convertedJob->nodeId = intval($node->nodeId);
+      }
+      return $convertedJob;
     } catch (Exception $ex) {
       return false;
     }
   }
 
-  public function executeMassAction($jobIds, $action) {
+  public function executeMassAction($jobIds, $action, $args) {
     $result = true;
 
     foreach ($jobIds as $jobId) {
-      $job = $this->getJobDetails($jobId);
-      if (!$job) {
-        $result = false;
-        continue;
+      if ($action === 'delete') {
+        try {
+          if (!$this->deleteJob($jobId)) {
+            $result = false;
+          }
+        } catch (Exception $ex) {
+          $result = false;
+        }
+
+      } else {
+        $job = $this->getJobDetails($jobId);
+        if (!$job) {
+          $result = false;
+          continue;
+        }
+
+        if ($action === 'clone') {
+          $job->title .= ' (' . $args->suffix . ')';
+          $job->enabled = false;
+          $job->type = \chronos\JobType::DEFAULT;
+
+          $jobId = $this->createJob($job);
+          if (!$jobId) {
+            $result = false;
+          }
+
+        } else {
+          if ($action === 'enable') {
+            $job->enabled = true;
+          } else if ($action === 'disable') {
+            $job->enabled = false;
+          } else if ($action === 'move') {
+            $job->folderId = $args->folderId;
+          }
+
+          if (!$this->updateJob($job)) {
+            $result = false;
+          }
+
+        }
       }
 
-      if ($action === 'enable') {
-        $job->enabled = true;
-      } else if ($action === 'disable') {
-        $job->enabled = false;
-      }
-
-      if (!$this->updateJob($job)) {
-        $result = false;
-      }
     }
 
     return $result;
+  }
+
+  private function validateAgainstWAF($thriftJob) {
+    global $config;
+
+    if (!isset($config['wafValidator'])) {
+      return;
+    }
+
+    try {
+      $client = WAFValidatorClient::connect();
+      $result = $client->client->checkJob($thriftJob);
+    } catch (Exception $ex) {
+      throw new InternalErrorException($ex);
+    }
+
+    if (!is_object($result)) {
+      throw new InternalErrorException();
+    }
+
+    if ($result->blocked !== false) {
+      error_log('Job rejected by WAF validator: ' . print_r($result, true));
+      throw new UnprocessableContentException();
+    }
   }
 
   public function submitJobTestRun($jobId, $job, $xForwardedFor) {
@@ -321,7 +693,7 @@ class JobManager {
       $node = (new NodeManager($this->authToken))->getJobNode($jobId);
     }
 
-    if ($node === null) {
+    if (!$node) {
       throw new InternalErrorException();
     }
 
@@ -330,11 +702,21 @@ class JobManager {
       throw new InternalErrorException();
     }
 
+    $userGroup = (new UserManager($this->authToken))->getGroup();
+    $userGroupId = $userGroup->userGroupId;
+
+    $thriftJob = $job->toThriftJob($this->authToken->userId, $userGroupId);
+
+    if ($userGroup->enableWAFValidator) {
+      $this->validateAgainstWAF($thriftJob);
+    }
+
     try {
       $client = $node->connect();
 
-      $handle = $client->submitJobTestRun($job->toThriftJob($this->authToken->userId, $this->authToken->userGroupId), $xForwardedFor);
+      $handle = $client->submitJobTestRun($thriftJob, $xForwardedFor);
       if ($handle) {
+        $redis->set(implode(':', ['testRun', $handle, 'userId']), intval($this->authToken->userId), $config['testRunLifetime']);
         $redis->set(implode(':', ['testRun', $handle, 'nodeId']), $node->nodeId, $config['testRunLifetime']);
         return $handle;
       } else {
@@ -345,14 +727,17 @@ class JobManager {
     }
   }
 
-  public function getJobTestRunStatus($handle) {
+  private function getJobTestRunNode($handle) {
     $redis = RedisConnection::get();
     if ($redis === null) {
       throw new InternalErrorException();
     }
 
+    $ownerUserId = $redis->get(implode(':', ['testRun', $handle, 'userId']));
     $nodeId = $redis->get(implode(':', ['testRun', $handle, 'nodeId']));
-    if ($nodeId === false) {
+    if ($ownerUserId === false
+        || $nodeId === false
+        || intval($ownerUserId) !== intval($this->authToken->userId)) {
       throw new InvalidArgumentsException();
     }
 
@@ -360,6 +745,12 @@ class JobManager {
     if (!$node) {
       throw new InternalErrorException();
     }
+
+    return $node;
+  }
+
+  public function getJobTestRunStatus($handle) {
+    $node = $this->getJobTestRunNode($handle);
 
     try {
       $client = $node->connect();
@@ -371,20 +762,7 @@ class JobManager {
   }
 
   public function deleteJobTestRun($handle) {
-    $redis = RedisConnection::get();
-    if ($redis === null) {
-      throw new InternalErrorException();
-    }
-
-    $nodeId = $redis->get(implode(':', ['testRun', $handle, 'nodeId']));
-    if ($nodeId === false) {
-      throw new InvalidArgumentsException();
-    }
-
-    $node = (new NodeManager($this->authToken))->getNode(intval($nodeId));
-    if (!$node) {
-      throw new InternalErrorException();
-    }
+    $node = $this->getJobTestRunNode($handle);
 
     try {
       $client = $node->connect();
@@ -402,10 +780,19 @@ class JobManager {
       return false;
     }
 
+    $userGroup = (new UserManager($this->authToken))->getGroup();
+    $userGroupId = $userGroup->userGroupId;
+
+    $thriftJob = $job->toThriftJob($this->authToken->userId, $userGroupId);
+
+    if ($userGroup->enableWAFValidator && $thriftJob->metaData->enabled) {
+      $this->validateAgainstWAF($thriftJob);
+    }
+
     try {
       $client = $node->connect();
 
-      $client->createOrUpdateJob($job->toThriftJob($this->authToken->userId, $this->authToken->userGroupId));
+      $client->createOrUpdateJob($thriftJob);
 
       return true;
     } catch (Exception $ex) {
@@ -418,6 +805,13 @@ class JobManager {
     $node = (new NodeManager($this->authToken))->getNodeForNewJob();
     if (!$node) {
       return false;
+    }
+
+    $userGroup = (new UserManager($this->authToken))->getGroup();
+    $userGroupId = $userGroup->userGroupId;
+
+    if ($userGroup->enableWAFValidator) {
+      $this->validateAgainstWAF($job->toThriftJob($this->authToken->userId, $userGroupId));
     }
 
     $transactionActive = false;
@@ -433,7 +827,10 @@ class JobManager {
         ->execute(array('userId' => $this->authToken->userId, 'nodeId' => $node->nodeId));
 
       $job->jobId = Database::get()->insertId();
-      $client->createOrUpdateJob($job->toThriftJob($this->authToken->userId, $this->authToken->userGroupId));
+
+      $thriftJob = $job->toThriftJob($this->authToken->userId, $userGroupId);
+
+      $client->createOrUpdateJob($thriftJob);
 
       Database::get()->commitTransaction();
       $transactionActive = false;

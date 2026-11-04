@@ -39,6 +39,18 @@ class GoneAPIException extends APIException {
   }
 }
 
+class UnprocessableContentException extends APIException {
+  public function httpStatus() {
+    return '422 Unprocessable Content';
+  }
+}
+
+class LockedAPIException extends APIException {
+  public function httpStatus() {
+    return '423 Locked';
+  }
+}
+
 class QuotaExceededAPIException extends APIException {
   public function httpStatus() {
     return '429 Quota Limit Exceeded';
@@ -95,7 +107,7 @@ interface APIMethod {
   public function validateRequest($request);
   public function execute($request, $sessionToken, $language);
   public function rateLimitKey($request, $sessionToken);
-  public function rateLimits();
+  public function rateLimits($sessionToken);
 }
 
 abstract class AbstractAPIMethod implements APIMethod {
@@ -107,7 +119,7 @@ abstract class AbstractAPIMethod implements APIMethod {
     }
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [];
   }
 }

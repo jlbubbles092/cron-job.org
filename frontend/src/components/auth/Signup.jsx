@@ -1,13 +1,14 @@
 import React, { useRef, useState } from 'react';
 import { Box, Button, Checkbox, FormControlLabel, Grid, Link, makeStyles, Typography } from '@material-ui/core';
 import { Alert, AlertTitle } from '@material-ui/lab';
+import Turnstile from 'react-turnstile';
 import { Link as RouterLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { createAccount } from '../../utils/API';
 import ValidatingTextField from '../misc/ValidatingTextField';
 import { RegexPatterns } from '../../utils/Constants';
-import ReCAPTCHA from 'react-google-recaptcha';
 import { Config } from '../../utils/Config';
+import { turnstileFailureAction } from '../../utils/TurnstileError';
 import moment from 'moment-timezone';
 
 const useStyles = makeStyles(themes => ({
@@ -35,13 +36,53 @@ export default function Signup() {
   const [acceptPrivacy, setAcceptPrivacy] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState();
-  const recaptchaRef = useRef();
-  
+  const [ turnstileToken, setTurnstileToken ] = useState(null);
+  const [ turnstileFailed, setTurnstileFailed ] = useState(false);
+  const turnstileFailures = useRef(0);
+  const turnstileBound = useRef(null);
+  const turnstileReady = Config.turnstileSiteKey === null || turnstileToken !== null;
+
+  function handleTurnstileLoad(_widgetId, bound) {
+    turnstileBound.current = bound;
+  }
+
+  function handleTurnstileVerify(token) {
+    turnstileFailures.current = 0;
+    setTurnstileToken(token);
+    setTurnstileFailed(false);
+  }
+
+  function handleTurnstileError(error, bound) {
+    if (bound) {
+      turnstileBound.current = bound;
+    }
+
+    turnstileFailures.current += 1;
+    if (turnstileFailureAction(error, turnstileFailures.current) === 'retry') {
+      return false;
+    }
+
+    console.error('Turnstile signup error', error);
+    setTurnstileToken(null);
+    setTurnstileFailed(true);
+    return true;
+  }
+
+  function retryTurnstile() {
+    turnstileFailures.current = 0;
+    setTurnstileFailed(false);
+    if (turnstileBound.current) {
+      turnstileBound.current.reset();
+    } else {
+      window.location.reload();
+    }
+  }
+
   function submit(event) {
     event.preventDefault();
 
     if (password1 !== password2
-        || !password1.match(RegexPatterns.password) 
+        || !password1.match(RegexPatterns.password)
         || !email.match(RegexPatterns.email)
         || !acceptToS
         || !acceptPrivacy) {
@@ -51,41 +92,40 @@ export default function Signup() {
     setIsLoading(true);
     setMessage();
 
-    recaptchaRef.current.executeAsync()
-      .then(token => {
-        return createAccount(token, firstName, lastName, email, password1, moment.tz.guess())
-          .then(() => {
-            setMessage({
-              severity: 'success',
-              text: t('signup.signupSuccess')
-            });
-          })
-          .catch(error => {
-            if (error.response && error.response.status === 409) {
-              setMessage({
-                severity: 'error',
-                text: t('signup.signupConflict')
-              });
-            } else {
-              setMessage({
-                severity: 'error',
-                text: t('signup.signupError')
-              });
-            }
+    const doCreateAccount = (token, tokenType) => {
+      return createAccount(token, tokenType, firstName, lastName, email, password1, moment.tz.guess())
+        .then(() => {
+          setMessage({
+            severity: 'success',
+            text: t('signup.signupSuccess')
           });
-      })
-      .catch(() => {
-        setMessage({
-          severity: 'error',
-          text: t('signup.recaptchaError')
+        })
+        .catch(error => {
+          if (error.response && error.response.status === 409) {
+            setMessage({
+              severity: 'error',
+              text: t('signup.signupConflict')
+            });
+          } else {
+            setMessage({
+              severity: 'error',
+              text: t('signup.signupError')
+            });
+          }
         });
-      })
-      .finally(() => {
-        if (recaptchaRef.current && (!message || message.severity !== 'success')) {
-          recaptchaRef.current.reset();
-        }
-        setIsLoading(false);
-      });
+    };
+
+    if (Config.turnstileSiteKey !== null) {
+      doCreateAccount(turnstileToken, 'turnstile')
+        .finally(() => {
+          setIsLoading(false);
+        });
+    } else {
+      doCreateAccount(null, null)
+        .finally(() => {
+          setIsLoading(false);
+        });
+    }
   }
 
   return <>
@@ -98,6 +138,16 @@ export default function Signup() {
     <form noValidate className={classes.form} onSubmit={submit}>
       {message && <Alert severity={message.severity} className={classes.error}>
         {message.text}
+      </Alert>}
+      {turnstileFailed && <Alert
+        severity="error"
+        className={classes.error}
+        action={
+          <Button color="inherit" size="small" type="button" onClick={retryTurnstile}>
+            {t('signup.turnstileRetry')}
+          </Button>
+        }>
+        {t('signup.recaptchaError')}
       </Alert>}
       {(!message || message.severity!=='success') && <>
         <Grid container spacing={1}>
@@ -175,11 +225,14 @@ export default function Signup() {
               patternErrorText={t('settings.invalidPassword')} />
           </Grid>
         </Grid>
-        <ReCAPTCHA
-          ref={recaptchaRef}
-          sitekey={Config.recaptchaSiteKey}
-          size='invisible'
-          />
+        {Config.turnstileSiteKey !== null && <Turnstile
+          sitekey={Config.turnstileSiteKey}
+          theme="auto"
+          appearance="interaction-only"
+          onLoad={handleTurnstileLoad}
+          onVerify={handleTurnstileVerify}
+          onError={handleTurnstileError}
+          />}
         {(password1.length > 0 && password2.length > 0 && password1 !== password2) &&
           <Alert severity='error'>
             <AlertTitle>{t('common.error')}</AlertTitle>
@@ -205,7 +258,7 @@ export default function Signup() {
           variant="contained"
           color="primary"
           className={classes.submit}
-          disabled={isLoading || !firstName.length || !lastName.length || !email.match(RegexPatterns.email) || !password1.match(RegexPatterns.password) || password1 !== password2 || !acceptToS || !acceptPrivacy}>
+          disabled={isLoading || !firstName.length || !lastName.length || !email.match(RegexPatterns.email) || !password1.match(RegexPatterns.password) || password1 !== password2 || !acceptToS || !acceptPrivacy || !turnstileReady}>
           {t('signup.createAccount')}
         </Button>
       </>}

@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2017 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2017-2026 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -82,13 +82,18 @@ void MySQL_DB::connect()
 	}
 
 	if(!bEstablished)
-		throw std::runtime_error(std::string("MySQL :") + std::string(mysql_error(handle)));
-
-	try
 	{
-		this->query("SET NAMES utf8");
+		std::string errorString;
+		if(handle != nullptr)
+		{
+			errorString = std::string(mysql_error(handle));
+			mysql_close(handle);
+			handle = nullptr;
+		}
+		throw std::runtime_error(std::string("MySQL_DB::connect(): ") + errorString);
 	}
-	catch (...) { }
+
+	this->query("SET NAMES utf8mb4");
 
 	lastQuery = time(nullptr);
 }
@@ -111,7 +116,6 @@ std::unique_ptr<MySQL_Result> MySQL_DB::query(const char *szQuery, ...)
 	else if(lastQuery < time(nullptr)-10)
 		mysql_ping(handle);
 
-	char szBuff[255], *szBuff2, *szArg;
 	std::unique_ptr<MySQL_Result> res = nullptr;
 	std::string strQuery;
 	va_list arglist;
@@ -148,11 +152,7 @@ std::unique_ptr<MySQL_Result> MySQL_DB::query(const char *szQuery, ...)
 				strQuery.append(std::to_string(va_arg(arglist, long long)));
 				break;
 			case 'q':
-				szArg = va_arg(arglist, char *);
-				szBuff2 = new char[strlen(szArg)*2+1];
-				mysql_real_escape_string(handle, szBuff2, szArg, (unsigned long)strlen(szArg));
-				strQuery.append(szBuff2);
-				delete[] szBuff2;
+				strQuery.append(escape(va_arg(arglist, char *)));
 				break;
 			};
 			++i;
@@ -207,4 +207,11 @@ my_ulonglong MySQL_DB::insertId()
 my_ulonglong MySQL_DB::affectedRows()
 {
 	return(mysql_affected_rows(handle));
+}
+
+std::string MySQL_DB::escape(const std::string &str)
+{
+	auto buff = std::make_unique<char[]>(str.size()*2 + 1);
+	mysql_real_escape_string(handle, buff.get(), str.c_str(), static_cast<unsigned long>(str.size()));
+	return std::string(buff.get());
 }

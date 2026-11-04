@@ -10,6 +10,16 @@ $lang = [
     . 'In case you did not request this change, please DO NOT click the confirmation link and instead ignore and delete this email.' . "\n\n"
     . 'Best regards,' . "\n\n"
     . '$projectName',
+  'confirmNotificationChannelEmail.footer' => 'You are receiving this email because someone added your email address as a notification channel. In case you did not request this, please ignore and delete this email.',
+  'confirmNotificationChannelEmail.subject' => '$projectName: Confirm notification email address',
+  'confirmNotificationChannelEmail.body' =>
+      'Hi,' . "\n\n"
+    . 'someone requested to send $projectName cron job notifications to $email.' . "\n\n"
+    . 'Please click the following link to confirm this email address.' . "\n\n"
+    . '{link|$confirmationLink|Confirm email address}' . "\n\n"
+    . 'In case you did not request this, please DO NOT click the confirmation link and instead ignore and delete this email.' . "\n\n"
+    . 'Best regards,' . "\n\n"
+    . '$projectName',
   'lostPasswordEmail.footer' => 'You are receiving this email because someone tried to reset the password of your account. In case you did not request this, please ignore and delete this email.',
   'lostPasswordEmail.subject' => '$projectName: Reset password',
   'lostPasswordEmail.body' =>
@@ -29,5 +39,36 @@ $lang = [
     . '{link|$confirmationLink|Activate account}' . "\n\n"
     . 'In case you did not sign up, please DO NOT click the link and instead ignore and delete this email.' . "\n\n"
     . 'Best regards,' . "\n\n"
-    . '$projectName'
+    . '$projectName',
+  'subscriptionEmail.footer' => 'You are receiving this email because your subscription status changed. In case of questions, do not hesitate to get in touch with our support team.',
+  'subscriptionActivatedEmail.subject' => '$projectName: Subscription activated',
+  'subscriptionActivatedEmail.body' =>
+      'Hi,' . "\n\n"
+    . 'thanks so much for supporting $projectName and making our service possible!' . "\n\n"
+    . 'Your subscription has been activated successfully. In rare cases, the subscription status might not show up in your account yet. In that case, please just re-login.' . "\n\n"
+    . 'Best regards,' . "\n\n"
+    . '$projectName',
+  'subscriptionCancelledEmail.subject' => '$projectName: Subscription terminated',
+  'subscriptionCancelledEmail.body' =>
+      'Hi,' . "\n\n"
+    . 'your subscription at $projectName has been terminated now.' . "\n\n"
+    . 'Thanks a lot for having supported $projectName!' . "\n\n"
+    . 'Best regards,' . "\n\n"
+    . '$projectName',
+  'subscriptionExpiringEmail.subject' => '$projectName: Subscription is being terminated',
+  'subscriptionExpiringEmail.body' =>
+      'Hi,' . "\n\n"
+    . 'as requested, we are terminating your subscription at $projectName effective at $cancelAt.' . "\n\n"
+    . 'Thanks a lot for having supported $projectName!' . "\n\n"
+    . 'Best regards,' . "\n\n"
+    . '$projectName',
+  'paymentFailedEmail.subject' => '$projectName: Failed subscription payment',
+  'paymentFailedEmail.body' =>
+      'Hi,' . "\n\n"
+    . 'our payment provider reported a failed payment for your $projectName subscription.' . "\n\n"
+    . 'Please check your payment method at Settings in your console at https://console.cron-job.org/ to ensure the renewal of your subscription can be processed correctly.' . "\n\n"
+    . 'If you have questions or concerns, please do not hesitate to get in touch.' . "\n\n"
+    . 'Best regards,' . "\n\n"
+    . '$projectName',
+  'dateFormat' => 'Y/m/d'
 ];

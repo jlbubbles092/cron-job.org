@@ -8,10 +8,8 @@ export function setAuthToken(token) {
 }
 
 export function endSession() {
-  //! @todo Flush complete state!
   return {
-    type: ActionTypes.SET_AUTH_SESSION,
-    session: null
+    type: ActionTypes.LOGOUT
   }
 }
 
@@ -49,5 +47,12 @@ export function setUiSetting(key, value) {
     type: ActionTypes.SET_UI_SETTING,
     key,
     value
+  }
+}
+
+export function setFolders(folders) {
+  return {
+    type: ActionTypes.SET_FOLDERS,
+    folders
   }
 }

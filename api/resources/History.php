@@ -19,6 +19,7 @@ class HistoryItem {
   public $headers;
   public $body;
   public $stats;
+  public $sslCertExpiry;
 
   public static function fromThriftJobLogEntry($log) {
     $result = new HistoryItem;
@@ -37,6 +38,9 @@ class HistoryItem {
     $result->headers        = isset($log->headers) ? $log->headers  : false;
     $result->body           = isset($log->body)    ? $log->body     : false;
     $result->stats          = isset($log->stats)   ? $log->stats    : null;
+    if (isset($log->sslCertExpiry) && $log->sslCertExpiry > 0) {
+      $result->sslCertExpiry = $log->sslCertExpiry;
+    }
 
     return $result;
   }
@@ -54,6 +58,11 @@ class NotificationItem {
   public $executionStatus;
   public $executionStatusText;
   public $httpStatus;
+  public $channelId;
+  public $channelType;
+  public $channelDestination;
+  public $result;
+  public $resultDetails;
 
   public static function fromThriftNotificationEntry($notification) {
     $result = new NotificationItem;
@@ -69,6 +78,11 @@ class NotificationItem {
     $result->executionStatus      = $notification->executionStatus;
     $result->executionStatusText  = $notification->executionStatusText;
     $result->httpStatus           = $notification->httpStatus;
+    $result->channelId            = $notification->notificationChannelId;
+    $result->channelType          = $notification->notificationChannelType;
+    $result->channelDestination   = $notification->notificationChannelDestination;
+    $result->result               = $notification->result;
+    $result->resultDetails        = $notification->resultDetails;
 
     return $result;
   }
@@ -88,7 +102,7 @@ class HistoryManager {
     return $identifier;
   }
 
-  public function getJobHistory($jobId, $maxEntries = 25, $maxPredictions = 3) {
+  public function getJobHistory($jobId, $maxEntries = 50, $maxPredictions = 3) {
     $node = (new NodeManager($this->authToken))->getJobNode($jobId);
     if (!$node) {
       return false;
@@ -112,9 +126,10 @@ class HistoryManager {
           array_keys($jobDetails->schedule->mdays),
           array_keys($jobDetails->schedule->wdays),
           array_keys($jobDetails->schedule->hours),
-          array_keys($jobDetails->schedule->minutes)
+          array_keys($jobDetails->schedule->minutes),
+          $jobDetails->schedule->expiresAt
         );
-        $predictions = $predictor->predictNextExecutions(time(), $maxPredictions);
+        $predictions = $predictor->predictNextExecutions(null, $maxPredictions);
       }
     } catch (Exception $ex) {
       return false;
@@ -192,7 +207,7 @@ class HistoryManager {
   private function getNodeNotifications($client, $maxEntries) {
     try {
       $notifications = $client->getNotifications($this->authToken->userId, $maxEntries);
-      
+
       $result = [];
       foreach ($notifications as $notification) {
         $result[] = NotificationItem::fromThriftNotificationEntry($notification);

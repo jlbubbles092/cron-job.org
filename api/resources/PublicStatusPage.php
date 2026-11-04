@@ -2,6 +2,7 @@
 require_once('lib/Database.php');
 require_once('resources/Job.php');
 require_once('resources/Node.php');
+require_once('resources/StatusPage.php');
 
 class PublicStatusPageManager {
   public function mayRequestCertificate($domain) {
@@ -76,16 +77,19 @@ class PublicStatusPageManager {
       try {
         $client = $node->connect();
 
+        $jobDetails = $client->getJobDetails(Job::createIdentifier($statusPageJob->jobId, $statusPageMeta->userId));
+
         $timeSeriesData = $client->getTimeSeriesData(Job::createIdentifier($statusPageJob->jobId, $statusPageMeta->userId), $statusPageJob->percentile);
         $timeSeriesData->last12Months = array_map($mapFunction, $timeSeriesData->last12Months);
         $timeSeriesData->last24Hours = array_map($mapFunction, $timeSeriesData->last24Hours);
-      } catch (Exception $ex) {
+    } catch (Exception $ex) {
         error_log('Exception while retrieving time series data: ' . (string)$ex);
         continue;
       }
 
       $statusPageMonitors[] = (object) [
         'title'             => $statusPageJob->title,
+        'enabled'           => boolval($jobDetails->metaData->enabled),
         'thresholds'        => (object) [
           'uptime'          => (object) [
             'error'         => (double)$statusPageJob->thresholdUptimeError,
@@ -101,6 +105,8 @@ class PublicStatusPageManager {
       ];
     }
 
+    $incidents = StatusPageManager::loadIncidents($statusPageMeta->statusPageId, true);
+
     unset($statusPageMeta->statusPageId);
 
     return (object) [
@@ -111,11 +117,12 @@ class PublicStatusPageManager {
           'mimeType'        => $statusPageMeta->logoMimeType
         ] : null
       ],
-      'statusPageMonitors'  => $statusPageMonitors
+      'statusPageMonitors'  => $statusPageMonitors,
+      'incidents'           => $incidents
     ];
   }
 
-  private static function parseStatusPageSubdomain($domain) {
+  public static function parseStatusPageSubdomain($domain) {
     global $config;
     if (strlen($domain) > strlen($config['statusPageDomain'])
         && strcasecmp(substr($domain, -(strlen($config['statusPageDomain']) + 1)), '.' . $config['statusPageDomain']) === 0) {

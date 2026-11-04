@@ -19,6 +19,8 @@
 
 #include <curl/curl.h>
 
+#include "BodyPatternMatcher.h"
+
 namespace Chronos
 {
 	class WorkerThread;
@@ -59,17 +61,14 @@ namespace Chronos
 		~HTTPRequest();
 
 	public:
-		static HTTPRequest *fromURL(const std::string &url, int userID, size_t maxSize, int requestTimeout);
+		static std::unique_ptr<HTTPRequest> fromURL(const std::string &url, int userID, size_t maxSize, int requestTimeout);
 
 		void submit(CurlWorker *worker);
 		void done(CURLcode res);
 
-		bool processData(const std::string &headers);
-		void processHeaders(const std::string &headers);
+		bool processData(const char *data, size_t size);
+		bool processHeaders(const char *headers, size_t size);
 
-		bool verifyPeerAddress(unsigned int addressLength, const struct sockaddr *address) const;
-
-	public:
 		std::string url;
 		bool useAuth = false;
 		std::string authUsername;
@@ -78,6 +77,7 @@ namespace Chronos
 		std::vector<std::pair<std::string, std::string>> requestHeaders;
 		std::string requestBody;
 		std::string xForwardedFor;
+		bool redirectSuccess = false;
 		std::unique_ptr<JobResult> result;
 		bool verbose = false;
 		std::function<void()> onDone;
@@ -95,6 +95,7 @@ namespace Chronos
 		char curlError[CURL_ERROR_SIZE];
 		size_t maxSize;
 		int requestTimeout;
+		BodyPatternMatcher bodyMatcher_;
 	};
 };
 

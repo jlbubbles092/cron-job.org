@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2021 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2021-2025 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -46,9 +46,13 @@ struct CurlWorker::Callbacks
 
         if(what == CURL_POLL_REMOVE)
         {
-            if(sockInfo->evset)
-                ev_io_stop(worker->privateData->evLoop, &sockInfo->ev);
-            delete sockInfo;
+            if(sockInfo != nullptr)
+            {
+                if(sockInfo->evset)
+                    ev_io_stop(worker->privateData->evLoop, &sockInfo->ev);
+                delete sockInfo;
+            }
+            curl_multi_assign(worker->privateData->curlHandle, s, nullptr);
         }
         else
         {
@@ -129,10 +133,24 @@ struct CurlWorker::Callbacks
         if(rc != CURLM_OK)
             throw std::runtime_error("curl_multi_socket_action failed (2)!");
 
-        worker->checkResults();
-
         if(worker->curlStillRunning <= 0)
+        {
             ev_timer_stop(worker->privateData->evLoop, &worker->privateData->timerEvent);
+        }
+
+        worker->checkResults();
+    }
+
+    static void evAsyncWatcherCallback(EV_P_ struct ev_async *w, int revents)
+    {
+        AsyncWatcher *watcher = static_cast<AsyncWatcher *>(w->data);
+        watcher->callback();
+    }
+
+    static void evTimerWatcherCallback(EV_P_ struct ev_timer *w, int revents)
+    {
+        TimerWatcher *watcher = static_cast<TimerWatcher *>(w->data);
+        watcher->callback();
     }
 
 private:
@@ -150,6 +168,69 @@ private:
         ev_io_start(worker->privateData->evLoop, &sockInfo->ev);
     }
 };
+
+struct AsyncWatcher::PrivateData
+{
+    CurlWorker *w;
+    ev_async async;
+};
+
+AsyncWatcher::AsyncWatcher(CurlWorker *w, const std::function<void()> &callback)
+    : privateData(std::make_unique<AsyncWatcher::PrivateData>())
+    , callback{callback}
+{
+    privateData->w = w;
+
+    ev_async_init(&privateData->async, CurlWorker::Callbacks::evAsyncWatcherCallback);
+    privateData->async.data = this;
+
+    ev_async_start(privateData->w->privateData->evLoop, &privateData->async);
+}
+
+AsyncWatcher::~AsyncWatcher()
+{
+}
+
+void AsyncWatcher::fire()
+{
+    ev_async_send(privateData->w->privateData->evLoop, &privateData->async);
+}
+
+struct TimerWatcher::PrivateData
+{
+    CurlWorker *w;
+    ev_timer timer;
+};
+
+TimerWatcher::TimerWatcher(CurlWorker *w, const std::function<void()> &callback)
+    : privateData(std::make_unique<TimerWatcher::PrivateData>())
+    , callback{callback}
+{
+    privateData->w = w;
+
+    ev_timer_init(&privateData->timer, CurlWorker::Callbacks::evTimerWatcherCallback, 0, 0);
+    privateData->timer.data = this;
+}
+
+TimerWatcher::~TimerWatcher()
+{
+    stop();
+}
+
+void TimerWatcher::set(double delaySeconds)
+{
+    stop();
+    if(delaySeconds < 0)
+        delaySeconds = 0;
+    ev_timer_set(&privateData->timer, delaySeconds, 0);
+    ev_timer_start(privateData->w->privateData->evLoop, &privateData->timer);
+}
+
+void TimerWatcher::stop()
+{
+    if(ev_is_active(&privateData->timer))
+        ev_timer_stop(privateData->w->privateData->evLoop, &privateData->timer);
+}
 
 CurlWorker::CurlWorker()
     : privateData{std::make_unique<PrivateData>()}
@@ -228,4 +309,16 @@ bool CurlWorker::add(CURL *handle)
 void CurlWorker::remove(CURL *handle)
 {
     curl_multi_remove_handle(privateData->curlHandle, handle);
+}
+
+std::shared_ptr<AsyncWatcher> CurlWorker::addAsyncWatcher(const std::function<void()> &handler)
+{
+    std::shared_ptr<AsyncWatcher> w(new AsyncWatcher(this, handler));
+    asyncWatchers.push_back(w);
+    return w;
+}
+
+std::shared_ptr<TimerWatcher> CurlWorker::addTimerWatcher(const std::function<void()> &handler)
+{
+    return std::shared_ptr<TimerWatcher>(new TimerWatcher(this, handler));
 }

@@ -11,7 +11,7 @@ class RecoverPassword extends AbstractAPIMethod {
     return false;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, 2 * RateLimit::SECOND)
     ];
@@ -25,7 +25,7 @@ class RecoverPassword extends AbstractAPIMethod {
 
   public function execute($request, $sessionToken, $language) {
     try {
-      if (!UserManager::recoverPassword($request->email, $language)) {
+      if (!UserManager::recoverPassword(trim($request->email), $language)) {
         throw new InternalErrorAPIException();
       }
     } catch (EmailAddresInUseException $ex) {

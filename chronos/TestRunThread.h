@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2021 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2021-2025 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -15,7 +15,6 @@
 #include "HTTPRequest.h"
 #include "JobResult.h"
 
-#include <condition_variable>
 #include <ctime>
 #include <memory>
 #include <mutex>
@@ -24,9 +23,11 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <atomic>
 
 namespace Chronos
 {
+    class AsyncWatcher;
     class CurlWorker;
     class HTTPRequest;
 
@@ -53,6 +54,7 @@ namespace Chronos
             std::string statusText;
             std::string peerAddress;
             int peerPort = 0;
+            uint64_t sslCertExpiry = 0;  // in s, 0 = not available (plain HTTP or no TLS)
             int duration = 0;            // in ms
             int timeNameLookup = 0;      // in us
             int timeConnect = 0;         // in us
@@ -112,11 +114,12 @@ namespace Chronos
         void cleanUp();
 
     private:
-        bool stop = false;
+        std::atomic<bool> stop{false};
         static TestRunThread *instance;
         std::unique_ptr<CurlWorker> curlWorker;
+        std::shared_ptr<AsyncWatcher> queueProcessingTrigger;
+        std::shared_ptr<AsyncWatcher> stopTrigger;
         std::mutex queueMutex;
-        std::condition_variable queueSignal;
         std::queue<std::shared_ptr<TestRun>> queue;
 
         std::mutex testRunsMutex;

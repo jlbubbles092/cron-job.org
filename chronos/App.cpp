@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2017 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2017-2025 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -15,9 +15,12 @@
 #include <iostream>
 #include <functional>
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <sstream>
 
-#include <civil_time.h>
-#include <time_zone.h>
+#include <cctz/civil_time.h>
+#include <cctz/time_zone.h>
 
 #include <signal.h>
 #include <stdlib.h>
@@ -31,10 +34,17 @@
 #include "UpdateThread.h"
 #include "NotificationThread.h"
 #include "WorkerThread.h"
+#include "HTTPRequest.h"
 #include "NodeService.h"
 #include "TestRunThread.h"
 #include "MasterService.h"
 #include "Config.h"
+#include "Metrics.h"
+#include "MetricsExposer.h"
+#include "MasterClientMetrics.h"
+#include "ScheduleMetricsBatch.h"
+
+#include <chrono>
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TSocket.h>
@@ -45,6 +55,8 @@
 
 namespace
 {
+
+constexpr int MASTER_SYNC_TIMEOUT_MS = 1000;
 
 int g_numLocks = 0;
 pthread_mutex_t *g_sslLocks = nullptr;
@@ -114,6 +126,7 @@ struct App::Private
 {
 public:
 	using UserGroupMap = std::unordered_map<int64_t, UserGroup>;
+	using DirtyJobIdSet = std::unordered_set<int64_t>;
 
 	void swapUserGroups(UserGroupMap &userGroups)
 	{
@@ -140,10 +153,87 @@ public:
 		return UserGroup();
 	}
 
+	void markJobDirty(int64_t jobId)
+	{
+		std::unique_lock<std::mutex> lock(dirtyJobIdsMutex);
+		dirtyJobIds.insert(jobId);
+	}
+
+	DirtyJobIdSet swapDirtyJobIds()
+	{
+		DirtyJobIdSet drained;
+		std::unique_lock<std::mutex> lock(dirtyJobIdsMutex);
+		dirtyJobIds.swap(drained);
+		return drained;
+	}
+
 private:
 	UserGroupMap userGroups;
 	std::mutex userGroupsMutex;
+	DirtyJobIdSet dirtyJobIds;
+	std::mutex dirtyJobIdsMutex;
 };
+
+namespace
+{
+
+struct CivilTimeParts
+{
+	int hour = 0;
+	int minute = 0;
+	int month = 0;
+	int mday = 0;
+	int wday = -1;
+	int year = 0;
+};
+
+bool civilTimeForTimeZone(time_t forTime, const std::string &timeZone, CivilTimeParts &out)
+{
+	cctz::time_zone tz;
+	if(!cctz::load_time_zone(timeZone, &tz))
+	{
+		return false;
+	}
+
+	auto civilTime = cctz::convert(std::chrono::system_clock::from_time_t(forTime), tz);
+	auto cWDay = cctz::get_weekday(cctz::civil_day(civilTime));
+	switch(cWDay)
+	{
+	case cctz::weekday::monday:		out.wday = 1;	break;
+	case cctz::weekday::tuesday:	out.wday = 2;	break;
+	case cctz::weekday::wednesday:	out.wday = 3;	break;
+	case cctz::weekday::thursday:	out.wday = 4;	break;
+	case cctz::weekday::friday:		out.wday = 5;	break;
+	case cctz::weekday::saturday:	out.wday = 6;	break;
+	case cctz::weekday::sunday:		out.wday = 0;	break;
+	default:						out.wday = -1;	break;
+	}
+
+	out.hour = civilTime.hour();
+	out.minute = civilTime.minute();
+	out.month = civilTime.month();
+	out.mday = civilTime.day();
+	out.year = civilTime.year();
+	return true;
+}
+
+std::string joinJobIds(const std::unordered_set<int64_t> &jobIds)
+{
+	std::ostringstream oss;
+	bool first = true;
+	for(int64_t jobId : jobIds)
+	{
+		if(!first)
+		{
+			oss << ',';
+		}
+		oss << jobId;
+		first = false;
+	}
+	return oss.str();
+}
+
+}
 
 App::App(int argc, char *argv[])
 	: priv{std::make_unique<Private>()}
@@ -169,6 +259,14 @@ App::App(int argc, char *argv[])
 
 App::~App()
 {
+	stopTestRunThread();
+	stopUpdateThread();
+	stopNotificationThread();
+	stopNodeServiceThread();
+	stopMasterServiceThread();
+	stopMetricsExposer();
+	Metrics::shutdown();
+
 	App::instance		= nullptr;
 }
 
@@ -189,8 +287,32 @@ bool App::isIpAddressBlocked(in_addr_t ipAddress) const
 	return false;
 }
 
+bool App::verifyPeerAddress(unsigned int addressLength, const struct sockaddr *address) const
+{
+	if(address == nullptr)
+		return false;
+
+	//! @note We don't support IPv6 at the moment.
+	if(address->sa_family != AF_INET)
+	{
+		std::cerr << "Unsupported sa_family: " << address->sa_family << std::endl;
+		return false;
+	}
+
+	if(addressLength != sizeof(struct sockaddr_in))
+	{
+		std::cerr << "Invalid AF_INET address length: " << addressLength << std::endl;
+		return false;
+	}
+
+	const struct sockaddr_in *inAddress = reinterpret_cast<const struct sockaddr_in *>(address);
+	return !isIpAddressBlocked(inAddress->sin_addr.s_addr);
+}
+
 void App::processJobs(time_t forTime, time_t plannedTime)
 {
+	const auto tickStart = std::chrono::steady_clock::now();
+
 	std::cout 	<< "App::processJobs(): Called for "
 				<< "forTime = " << forTime << ", "
 				<< "plannedTime = " << plannedTime
@@ -212,55 +334,34 @@ void App::processJobs(time_t forTime, time_t plannedTime)
 		workerThreads.push_back(std::make_shared<WorkerThread>(
 			t.tm_mday, t.tm_mon+1, t.tm_year+1900, t.tm_hour, t.tm_min,
 			i >= numThreads ? parallelMonitoringRequests : parallelRequests,
-			i >= numThreads ? deferMonitorJobsMs : 0));
+			i >= numThreads ? deferMonitorJobsMs : 0,
+			i >= numThreads ? JobType_t::MONITORING : JobType_t::DEFAULT));
 	}
 
-	std::map<uint8_t, std::vector<HTTPRequest *>> requestsByPriority;
+	std::map<uint8_t, std::vector<std::unique_ptr<HTTPRequest>>> requestsByPriority;
+	ScheduleMetricsBatch scheduleBatch;
 	MYSQL_ROW row;
 	auto res = db->query("SELECT DISTINCT(`timezone`) FROM `job` WHERE `enabled`=1");
 	while((row = res->fetchRow()) != nullptr)
 	{
 		std::string timeZone(row[0]);
 
-		cctz::time_zone tz;
-		if(!cctz::load_time_zone(timeZone, &tz))
+		if (timeZone.empty())
 		{
-			std::cout << "App::processJobs(): Failed to load time zone: " << timeZone << ", skipping" << std::endl;
 			continue;
 		}
 
-		auto civilTime = cctz::convert(std::chrono::system_clock::from_time_t(forTime), tz);
-		auto cWDay = cctz::get_weekday(cctz::civil_day(civilTime));
-		int wday = -1;
-		switch(cWDay)
+		CivilTimeParts civilTime;
+		if(!civilTimeForTimeZone(forTime, timeZone, civilTime))
 		{
-		case cctz::weekday::monday:		wday = 1;	break;
-		case cctz::weekday::tuesday:	wday = 2;	break;
-		case cctz::weekday::wednesday:	wday = 3;	break;
-		case cctz::weekday::thursday:	wday = 4;	break;
-		case cctz::weekday::friday:		wday = 5;	break;
-		case cctz::weekday::saturday:	wday = 6;	break;
-		case cctz::weekday::sunday:		wday = 0;	break;
-		default:						wday = -1;	break;
+			std::cout << "App::processJobs(): Failed to load time zone: " << timeZone << ", skipping" << std::endl;
+			Metrics::instance().incrementScheduleTimezonesSkipped();
+			continue;
 		}
 
-		processJobsForTimeZone(civilTime.hour(), civilTime.minute(), civilTime.month(), civilTime.day(), wday, civilTime.year(),
-			plannedTime, timeZone, requestsByPriority);
+		processJobsForTimeZone(civilTime.hour, civilTime.minute, civilTime.month, civilTime.mday, civilTime.wday, civilTime.year,
+			plannedTime, timeZone, requestsByPriority, scheduleBatch);
 	}
-
-	// Add jobs to worker threads
-	std::size_t i = 0;
-	for(auto prioSlotIt = requestsByPriority.rbegin(); prioSlotIt != requestsByPriority.rend(); ++prioSlotIt)
-	{
-		std::cout << "App::processJobs(): " << prioSlotIt->second.size() << " jobs with priority " << static_cast<int>(prioSlotIt->first) << std::endl;
-		for(auto req : prioSlotIt->second)
-		{
-			const auto &wt = workerThreads[req->result->jobType == JobType_t::MONITORING ? ((i % numMonitoringThreads) + numThreads) : (i % numThreads)];
-			wt->addJob(req);
-			++i;
-		}
-	}
-	requestsByPriority.clear();
 
 	std::cout << "App::processJobs(): Waiting for plannedTime = " << plannedTime << ", curTime = " << time(nullptr) << "..." << std::endl;
 	while(time(nullptr) < plannedTime && !stop)
@@ -275,13 +376,40 @@ void App::processJobs(time_t forTime, time_t plannedTime)
 		return;
 	}
 
+	auto dirtyJobIds = priv->swapDirtyJobIds();
+	if(!dirtyJobIds.empty())
+	{
+		refreshDirtyJobs(forTime, plannedTime, requestsByPriority, scheduleBatch, dirtyJobIds);
+	}
+
+	// Add jobs to worker threads
+	std::size_t i = 0;
+	for(auto prioSlotIt = requestsByPriority.rbegin(); prioSlotIt != requestsByPriority.rend(); ++prioSlotIt)
+	{
+		std::cout << "App::processJobs(): " << prioSlotIt->second.size() << " jobs with priority " << static_cast<int>(prioSlotIt->first) << std::endl;
+		for(auto &req : prioSlotIt->second)
+		{
+			if (req->result->jobType == JobType_t::MONITORING)
+			{
+				req->result->datePlanned += deferMonitorJobsMs;
+			}
+
+			const auto &wt = workerThreads[req->result->jobType == JobType_t::MONITORING ? ((i % numMonitoringThreads) + numThreads) : (i % numThreads)];
+			wt->addJob(std::move(req));
+			++i;
+		}
+	}
+	requestsByPriority.clear();
+
 	for(std::size_t i = 0; i < numThreads + numMonitoringThreads; ++i)
 	{
 		const auto &wt = workerThreads[i];
 
 		if(!wt->empty())
 		{
+			const JobType_t jobType = i >= numThreads ? JobType_t::MONITORING : JobType_t::DEFAULT;
 			std::cout << "App::processJobs(): Starting worker thread " << i << " with " << wt->numJobs() << " jobs" << std::endl;
+			Metrics::instance().incrementWorkerThreadsStarted(jobType);
 			wt->run();
 		}
 		else
@@ -289,10 +417,16 @@ void App::processJobs(time_t forTime, time_t plannedTime)
 			std::cout << "App::processJobs(): No jobs for worker thread " << i << std::endl;
 		}
 	}
+
+	Metrics::instance().mergeScheduleBatch(scheduleBatch);
+
+	const std::chrono::duration<double> tickElapsed = std::chrono::steady_clock::now() - tickStart;
+	Metrics::instance().observeScheduleTickDurationSeconds(tickElapsed.count());
 }
 
 void App::processJobsForTimeZone(int hour, int minute, int month, int mday, int wday, int year, time_t timestamp, const std::string &timeZone,
-	std::map<uint8_t, std::vector<HTTPRequest *>> &requestsByPriority)
+	std::map<uint8_t, std::vector<std::unique_ptr<HTTPRequest>>> &requestsByPriority, ScheduleMetricsBatch &scheduleBatch,
+	const std::unordered_set<int64_t> *jobIdFilter)
 {
 	std::cout 	<< "App::processJobsForTimeZone(): Called for "
 				<< "hour = " << hour << ", "
@@ -304,30 +438,52 @@ void App::processJobsForTimeZone(int hour, int minute, int month, int mday, int 
 				<< "timeZone = " << timeZone
 				<< std::endl;
 
+	if(jobIdFilter != nullptr && jobIdFilter->empty())
+	{
+		return;
+	}
+
 	auto userGroups = priv->getUserGroups();
 	const size_t defaultMaxSize = App::getInstance()->config->getInt("request_max_size");
 	const int defaultRequestTimeout = App::getInstance()->config->getInt("request_timeout");
 	const int defaultMaxFailures = App::getInstance()->config->getInt("max_failures");
 	const int8_t defaultExecutionPriority = 0;
 
-	auto res = db->query("SELECT TRIM(`url`),`job`.`jobid`,`auth_enable`,`auth_user`,`auth_pass`,`notify_failure`,`notify_success`,`notify_disable`,`fail_counter`,`save_responses`,`job`.`userid`,`request_method`,COUNT(`job_header`.`jobheaderid`),`job_body`.`body`,`title`,`job`.`type`,`usergroupid`,`request_timeout` FROM `job` "
-									"INNER JOIN `job_hours` ON `job_hours`.`jobid`=`job`.`jobid` "
-									"INNER JOIN `job_mdays` ON `job_mdays`.`jobid`=`job`.`jobid` "
-									"INNER JOIN `job_wdays` ON `job_wdays`.`jobid`=`job`.`jobid` "
-									"INNER JOIN `job_minutes` ON `job_minutes`.`jobid`=`job`.`jobid` "
-									"INNER JOIN `job_months` ON `job_months`.`jobid`=`job`.`jobid` "
-									"LEFT JOIN `job_header` ON `job_header`.`jobid`=`job`.`jobid` "
-									"LEFT JOIN `job_body` ON `job_body`.`jobid`=`job`.`jobid` "
-									"WHERE (`hour`=-1 OR `hour`=%d) "
-									"AND (`minute`=-1 OR `minute`=%d) "
-									"AND (`mday`=-1 OR `mday`=%d) "
-									"AND (`wday`=-1 OR `wday`=%d) "
-									"AND (`month`=-1 OR `month`=%d) "
-									"AND `job`.`timezone`='%q' "
-									"AND `enabled`=1 "
-									"GROUP BY `job`.`jobid` "
-									"ORDER BY `fail_counter` ASC, `job`.`jobid` ASC",
-									hour, minute, mday, wday, month, timeZone.c_str());
+	const int64_t expiryCompareVal = year * 10000000000 + month * 100000000 + mday * 1000000 + hour * 10000 + minute * 100;
+
+	std::string jobIdFilterClause;
+	if(jobIdFilter != nullptr)
+	{
+		jobIdFilterClause = "AND `job`.`jobid` IN (" + joinJobIds(*jobIdFilter) + ") ";
+	}
+
+	const std::string query =
+		"SELECT TRIM(`url`),`job`.`jobid`,`auth_enable`,`auth_user`,`auth_pass`,`notify_failure`,`notify_success`,`notify_disable`,`fail_counter`,`save_responses`,`job`.`userid`,`request_method`,COUNT(`job_header`.`jobheaderid`),`job_body`.`body`,`title`,`job`.`type`,`usergroupid`,`request_timeout`,`redirect_success`,`unfiltered_fail_counter`,`notify_failure_count`,`notify_ssl_cert_expiry`,`notify_ssl_cert_expiry_seconds`,`notification_mode`,`selected_notification_channels` FROM `job` "
+		"INNER JOIN `job_hours` ON `job_hours`.`jobid`=`job`.`jobid` "
+		"INNER JOIN `job_mdays` ON `job_mdays`.`jobid`=`job`.`jobid` "
+		"INNER JOIN `job_wdays` ON `job_wdays`.`jobid`=`job`.`jobid` "
+		"INNER JOIN `job_minutes` ON `job_minutes`.`jobid`=`job`.`jobid` "
+		"INNER JOIN `job_months` ON `job_months`.`jobid`=`job`.`jobid` "
+		"LEFT JOIN `job_header` ON `job_header`.`jobid`=`job`.`jobid` "
+		"LEFT JOIN `job_body` ON `job_body`.`jobid`=`job`.`jobid` "
+		"WHERE (`hour`=-1 OR `hour`=%d) "
+		"AND (`minute`=-1 OR `minute`=%d) "
+		"AND ("
+		"    (`mday`=-1 AND `wday`=-1)"
+		" OR (`mday`=-1 AND `wday`=%d)"
+		" OR (`mday`=%d AND `wday`=-1)"
+		" OR (`mday`!=-1 AND `wday`!=-1 AND (`wday`=%d OR `mday`=%d))"
+		") "
+		"AND (`month`=-1 OR `month`=%d) "
+		"AND `job`.`timezone`='%q' "
+		"AND (`job`.`expires_at`=0 OR `job`.`expires_at`>=%u) "
+		"AND `enabled`=1 "
+		+ jobIdFilterClause +
+		"GROUP BY `job`.`jobid` "
+		"ORDER BY `unfiltered_fail_counter` ASC, `job`.`jobid` ASC";
+
+	auto res = db->query(query.c_str(),
+									hour, minute, wday, mday, wday, mday, month, timeZone.c_str(), expiryCompareVal);
 
 	int jobCount = res->numRows();
 	std::cout << "App::processJobs(): " << jobCount << " jobs found" << std::endl;
@@ -359,21 +515,31 @@ void App::processJobsForTimeZone(int hour, int minute, int month, int mday, int 
 				requestTimeout = groupRequestTimeout;
 			}
 
-			HTTPRequest *req = HTTPRequest::fromURL(row[0], atoi(row[10]), maxSize, requestTimeout);
+			std::unique_ptr<HTTPRequest> req = HTTPRequest::fromURL(Utils::replaceVariables(row[0]), atoi(row[10]), maxSize, requestTimeout);
 			req->result->maxFailures 	= maxFailures;
 			req->result->jobID 			= atoi(row[1]);
 			req->result->datePlanned	= (uint64_t)timestamp * 1000;
 			req->result->notifyFailure 	= strcmp(row[5], "1") == 0;
+			req->result->notifyFailureCount = std::max(1, atoi(row[20]));
 			req->result->notifySuccess 	= strcmp(row[6], "1") == 0;
 			req->result->notifyDisable 	= strcmp(row[7], "1") == 0;
 			req->result->oldFailCounter	= atoi(row[8]);
+			req->result->oldUnfilteredFailCounter = atoi(row[19]);
 			req->result->saveResponses	= strcmp(row[9], "1") == 0;
+			req->result->notifySslCertExpiry = strcmp(row[21], "1") == 0;
+			req->result->notifySslCertExpirySeconds = std::max(0, atoi(row[22]));
+			{
+				const int mode = atoi(row[23]);
+				req->result->notificationMode = (mode >= 0 && mode <= 2) ? mode : 1;
+			}
+			req->result->selectedNotificationChannels = row[24] != nullptr ? row[24] : "";
 			if(atoi(row[2]) == 1)
 			{
 				req->useAuth 		= true;
 				req->authUsername 	= row[3];
 				req->authPassword 	= row[4];
 			}
+			req->redirectSuccess		= std::strcmp(row[18], "1") == 0;
 			req->requestMethod		= static_cast<RequestMethod>(atoi(row[11]));
 
 			if(row[12] != NULL && atoi(row[12]) > 0)
@@ -382,19 +548,20 @@ void App::processJobsForTimeZone(int hour, int minute, int month, int mday, int 
 					row[1]);
 				while(MYSQL_ROW row = headerRes->fetchRow())
 				{
-					req->requestHeaders.push_back({ std::string(row[0]), std::string(row[1]) });
+					req->requestHeaders.push_back({ std::string(row[0]), Utils::replaceVariables(std::string(row[1])) });
 				}
 			}
 
 			if(row[13] != NULL)
 			{
-				req->requestBody	= row[13];
+				req->requestBody	= Utils::replaceVariables(std::string(row[13]));
 			}
 
 			req->result->title		= row[14];
 			req->result->jobType  	= static_cast<JobType_t>(atoi(row[15]));
 
-			requestsByPriority[executionPriority].push_back(req);
+			scheduleBatch.add(req->result->jobType, executionPriority);
+			requestsByPriority[executionPriority].push_back(std::move(req));
 		}
 	}
 
@@ -403,17 +570,74 @@ void App::processJobsForTimeZone(int hour, int minute, int month, int mday, int 
 	std::cout << "App::processJobsForTimeZone(): Finished" << std::endl;
 }
 
+void App::refreshDirtyJobs(time_t forTime, time_t plannedTime,
+	std::map<uint8_t, std::vector<std::unique_ptr<HTTPRequest>>> &requestsByPriority,
+	ScheduleMetricsBatch &scheduleBatch,
+	const std::unordered_set<int64_t> &dirtyJobIds)
+{
+	std::cout << "App::refreshDirtyJobs(): Refreshing " << dirtyJobIds.size() << " dirty job(s)" << std::endl;
+
+	for(auto &prioSlot : requestsByPriority)
+	{
+		auto &jobs = prioSlot.second;
+		jobs.erase(std::remove_if(jobs.begin(), jobs.end(),
+			[&dirtyJobIds](const std::unique_ptr<HTTPRequest> &req) {
+				return dirtyJobIds.find(req->result->jobID) != dirtyJobIds.end();
+			}),
+			jobs.end());
+	}
+
+	const std::string jobIdList = joinJobIds(dirtyJobIds);
+	auto res = db->query(("SELECT `jobid`,`timezone` FROM `job` WHERE `jobid` IN (" + jobIdList + ")").c_str());
+
+	std::unordered_map<std::string, std::unordered_set<int64_t>> jobIdsByTimeZone;
+	MYSQL_ROW row;
+	while((row = res->fetchRow()) != nullptr)
+	{
+		if(row[1] == nullptr || row[1][0] == '\0')
+		{
+			continue;
+		}
+		jobIdsByTimeZone[row[1]].insert(std::stoll(row[0]));
+	}
+	res.reset();
+
+	for(const auto &entry : jobIdsByTimeZone)
+	{
+		CivilTimeParts civilTime;
+		if(!civilTimeForTimeZone(forTime, entry.first, civilTime))
+		{
+			std::cout << "App::refreshDirtyJobs(): Failed to load time zone: " << entry.first << ", skipping" << std::endl;
+			Metrics::instance().incrementScheduleTimezonesSkipped();
+			continue;
+		}
+
+		processJobsForTimeZone(civilTime.hour, civilTime.minute, civilTime.month, civilTime.mday, civilTime.wday, civilTime.year,
+			plannedTime, entry.first, requestsByPriority, scheduleBatch, &entry.second);
+	}
+
+	Metrics::instance().incrementScheduleDirtyJobsRefreshed(dirtyJobIds.size());
+}
+
 UserGroup App::getUserGroupById(uint64_t userGroupId)
 {
 	return priv->getUserGroupById(userGroupId);
 }
 
+void App::markJobDirty(int64_t jobId)
+{
+	priv->markJobDirty(jobId);
+}
+
 void App::syncUserGroups()
 {
-	std::shared_ptr<apache::thrift::transport::TTransport> masterSocket
+	std::shared_ptr<apache::thrift::transport::TSocket> masterSocket
 		= std::make_shared<apache::thrift::transport::TSocket>(
 			config->get("master_service_address"),
 			config->getInt("master_service_port"));
+	masterSocket->setConnTimeout(MASTER_SYNC_TIMEOUT_MS);
+	masterSocket->setRecvTimeout(MASTER_SYNC_TIMEOUT_MS);
+	masterSocket->setSendTimeout(MASTER_SYNC_TIMEOUT_MS);
 	std::shared_ptr<apache::thrift::transport::TTransport> masterTransport
 		= std::make_shared<apache::thrift::transport::TBufferedTransport>(masterSocket);
 	std::shared_ptr<apache::thrift::protocol::TProtocol> masterProtocol
@@ -426,7 +650,9 @@ void App::syncUserGroups()
 		masterTransport->open();
 
 		std::vector<UserGroup> userGroups;
-		masterClient->getUserGroups(userGroups);
+		callMaster("getUserGroups", [&]() {
+			masterClient->getUserGroups(userGroups);
+		});
 
 		std::unordered_map<int64_t, UserGroup> userGroupsById;
 		for(const auto &group : userGroups)
@@ -472,6 +698,23 @@ int App::run()
 
 	signal(SIGINT, App::signalHandler);
 
+	std::string metricsMode;
+	if(config->getInt("job_executor_enable"))
+		metricsMode = metricsMode.empty() ? "executor" : metricsMode + ",executor";
+	if(config->getInt("node_service_enable"))
+		metricsMode = metricsMode.empty() ? "node_service" : metricsMode + ",node_service";
+	if(config->getInt("master_service_enable"))
+		metricsMode = metricsMode.empty() ? "master" : metricsMode + ",master";
+	if(metricsMode.empty())
+		metricsMode = "none";
+
+	Metrics::init(metricsMode, config->getInt("node_id", 0));
+
+	if(config->getInt("metrics_enable", 1))
+	{
+		startMetricsExposer();
+	}
+
 	if(config->getInt("master_service_enable"))
 	{
 		startMasterServiceThread();
@@ -506,8 +749,11 @@ int App::run()
 				// update last time
 				memcpy(&lastTime, &t, sizeof(struct tm));
 
+				const time_t plannedTime = currentTime + 60 - t.tm_sec;
+				Metrics::instance().setSchedulerLoopLagSeconds(static_cast<double>(currentTime - plannedTime));
+
 				syncUserGroups();
-				processJobs(currentTime + 60, currentTime + 60 - t.tm_sec);
+				processJobs(currentTime + 60, plannedTime);
 				cleanUpNotifications();
 			}
 			else
@@ -537,6 +783,8 @@ int App::run()
 	{
 		stopMasterServiceThread();
 	}
+
+	stopMetricsExposer();
 
 	uninitSSLLocks();
 	MySQL_DB::libCleanup();
@@ -635,6 +883,10 @@ void App::startUpdateThread()
 
 void App::stopUpdateThread()
 {
+	if (!updateThread.joinable())
+	{
+		return;
+	}
 	updateThreadObj->stopThread();
 	updateThread.join();
 }
@@ -646,6 +898,10 @@ void App::startTestRunThread()
 
 void App::stopTestRunThread()
 {
+	if (!testRunThread.joinable())
+	{
+		return;
+	}
 	testRunThreadObj->stopThread();
 	testRunThread.join();
 }
@@ -657,6 +913,10 @@ void App::startNotificationThread()
 
 void App::stopNotificationThread()
 {
+	if (!notificationThread.joinable())
+	{
+		return;
+	}
 	notificationThreadObj->stopThread();
 	notificationThread.join();
 }
@@ -668,6 +928,10 @@ void App::startNodeServiceThread()
 
 void App::stopNodeServiceThread()
 {
+	if (!nodeServiceThread.joinable())
+	{
+		return;
+	}
 	nodeServiceObj->stop();
 	nodeServiceThread.join();
 }
@@ -679,8 +943,29 @@ void App::startMasterServiceThread()
 
 void App::stopMasterServiceThread()
 {
+	if (!masterServiceThread.joinable())
+	{
+		return;
+	}
 	masterServiceObj->stop();
 	masterServiceThread.join();
+}
+
+void App::startMetricsExposer()
+{
+	metricsExposerObj = std::make_unique<MetricsExposer>(
+		config->get("metrics_interface", "127.0.0.1"),
+		config->getInt("metrics_port", 9098));
+	metricsExposerObj->run();
+}
+
+void App::stopMetricsExposer()
+{
+	if(metricsExposerObj)
+	{
+		metricsExposerObj->stop();
+		metricsExposerObj.reset();
+	}
 }
 
 std::unique_ptr<MySQL_DB> App::createMySQLConnection()

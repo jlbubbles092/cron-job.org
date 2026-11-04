@@ -1,4 +1,5 @@
 <?php
+require_once('config/denylists.inc.php');
 require_once('lib/APIMethod.php');
 require_once('resources/Job.php');
 
@@ -11,13 +12,24 @@ class UpdateJob extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
-      new RateLimit(1, RateLimit::SECOND)
+      new RateLimit(5, RateLimit::SECOND)
     ];
   }
 
   public function validateRequest($request) {
+    global $jobUrlDenyList;
+
+    if (isset($request->job->url)) {
+      $lowerUrl = strtolower($request->job->url);
+      foreach ($jobUrlDenyList as $deniedUrl) {
+        if (strpos($lowerUrl, $deniedUrl) !== false) {
+          return false;
+        }
+      }
+    }
+
     return (
          isset($request->jobId)
       && is_numeric($request->jobId)

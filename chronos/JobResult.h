@@ -29,7 +29,8 @@ namespace Chronos
 		JOBSTATUS_FAILED_SIZE		= 6,
 		JOBSTATUS_FAILED_URL		= 7,
 		JOBSTATUS_FAILED_INTERNAL	= 8,
-		JOBSTATUS_FAILED_OTHERS 	= 9
+		JOBSTATUS_FAILED_OTHERS 	= 9,
+		JOBSTATUS_FAILED_CHALLENGEPAGE = 10
 	};
 
 	enum class JobType_t : int
@@ -55,12 +56,19 @@ namespace Chronos
 		std::string responseBody;
 		std::string statusText;
 		bool notifyFailure = false;
+		int notifyFailureCount = 1;
 		bool notifySuccess = false;
 		bool notifyDisable = false;
+		bool notifySslCertExpiry = false;
+		int notifySslCertExpirySeconds = 604800; // in s, default 7 days
+		int notificationMode = 1; // 0=none, 1=all, 2=selected
+		std::string selectedNotificationChannels; // comma-separated channel IDs
 		bool saveResponses = false;
 		int oldFailCounter = 0;
+		int oldUnfilteredFailCounter = 0;
 		std::string peerAddress;
 		int peerPort = 0;
+		uint64_t sslCertExpiry = 0;	// in s, 0 = not available (plain HTTP or no TLS)
 
 		int timeNameLookup = 0;		// in us
 		int timeConnect = 0;		// in us
@@ -71,6 +79,9 @@ namespace Chronos
 
 		JobType_t jobType = JobType_t::DEFAULT;
 		int maxFailures = 0;
+
+		std::size_t responseHeadersSize = 0;
+		std::size_t responseBodySize = 0;
 	};
 };
 

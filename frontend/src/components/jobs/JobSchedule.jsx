@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RadioGroup, FormControlLabel, Radio, Select, MenuItem, makeStyles, FormControl, InputLabel, FormLabel, FormGroup, List, ListItem, ListItemText, TextField, InputAdornment, IconButton } from '@material-ui/core';
+import { RadioGroup, FormControlLabel, Radio, Select, MenuItem, makeStyles, FormControl, InputLabel, FormLabel, FormGroup, List, ListItem, ListItemText, Switch, Typography, Box } from '@material-ui/core';
+import ErrorIcon from '@material-ui/icons/ErrorOutline';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { predictNextExecutions, ExecutionDate } from '../../utils/ExecutionPredictor';
 import { Alert } from '@material-ui/lab';
-import { scheduleToCrontabExpression } from '../../utils/CrontabExpression';
-import CopyIcon from '@material-ui/icons/FileCopy';
-import { CopyToClipboard } from 'react-copy-to-clipboard';
-import { useSnackbar } from 'notistack';
+import { crontabExpressionToSchedule, scheduleToCrontabExpression } from '../../utils/CrontabExpression';
 import useViewport from '../../hooks/useViewport';
+import CopyableTextField from '../misc/CopyableTextField';
 
 const useStyles = makeStyles((theme) => ({
   schedule: {
@@ -63,8 +62,16 @@ const useStyles = makeStyles((theme) => ({
       fontFamily: '"Roboto Mono", courier',
       textAlign: 'center'
     }
+  },
+  scheduleExpiry: {
+    marginTop: theme.spacing(2)
+  },
+  scheduleExpiryAt: {
+    marginLeft: theme.spacing(6)
   }
 }));
+
+const MINUTE_CHOICES = [ 1, 2, 5, 10, 15, 30, 60, 2 * 60, 3 * 60, 4 * 60, 6 * 60, 8 * 60, 12 * 60 ];
 
 function isWildcard(array) {
   return array.length === 1 && array[0] === -1;
@@ -91,15 +98,35 @@ function parseMinutesSchedule({ hours, minutes, wdays, mdays, months }) {
       }
     }
 
+    if (diffVal > 0 && MINUTE_CHOICES.includes(diffVal)) {
+      return { minuteDiffVal: diffVal };
+    }
+  }
+
+  else if (  (minutes.length === 1  && minutes[0] === 0)
+          && (hours.length > 1      && !isWildcard(hours))
+          && (wdays.length === 7    || isWildcard(wdays))
+          && (mdays.length  === 31  || isWildcard(mdays))
+          && (months.length === 12  || isWildcard(months))) {
+    let diffVal = -1;
+
+    const multiplier = hours[1] - hours[0];
+    const multiplierValidated =
+          hours.reduce((prev, cur, index) => prev && (index * multiplier) === cur, true)
+      &&  hours.length === Math.floor(24 / multiplier);
+    if (multiplierValidated) {
+      diffVal = multiplier * 60;
+    }
+
     if (diffVal > 0) {
       return { minuteDiffVal: diffVal };
     }
   }
+
   return false;
 }
 
 function MinutesSchedule({ initialSchedule, onChange = () => null }) {
-  const MINUTES = [ 1, 2, 5, 10, 15, 30, 60 ];
   const DEFAULT_MINUTE = 15;
 
   const { t } = useTranslation();
@@ -112,7 +139,7 @@ function MinutesSchedule({ initialSchedule, onChange = () => null }) {
   useEffect(() => {
     if (initialSchedule) {
       const parsedSchedule = parseMinutesSchedule(initialSchedule);
-      if (parsedSchedule) {
+      if (parsedSchedule && MINUTE_CHOICES.includes(parsedSchedule.minuteDiffVal)) {
         setMinuteDiffVal(parsedSchedule.minuteDiffVal);
       }
     }
@@ -120,19 +147,33 @@ function MinutesSchedule({ initialSchedule, onChange = () => null }) {
 
   useEffect(() => {
     const minutes = [];
+    const hours = [];
+
     if (minuteDiffVal === 1) {
       minutes.push(-1);
-    } else {
+    } else if (minuteDiffVal <= 60) {
      for (let i = 0; i < 60; i += minuteDiffVal) {
         minutes.push(i);
       }
+    } else if (minuteDiffVal > 60) {
+      const hourDiffVal = minuteDiffVal / 60;
+
+      minutes.push(0);
+
+      for (let i = 0; i < 24; i += hourDiffVal) {
+        hours.push(i);
+      }
+    }
+
+    if (hours.length === 0) {
+      hours.push(-1);
     }
 
     onChangeHook.current({
       mdays:    [-1],
       wdays:    [-1],
       months:   [-1],
-      hours:    [-1],
+      hours,
       minutes
     });
   }, [minuteDiffVal, onChangeHook]);
@@ -141,9 +182,12 @@ function MinutesSchedule({ initialSchedule, onChange = () => null }) {
     <FormControl>
       <span>{t('jobs.schedule.every')}</span>
       <Select value={minuteDiffVal} onChange={({target}) => setMinuteDiffVal(parseInt(target.value))}>
-        {MINUTES.map(minute => <MenuItem value={minute} key={minute}>{minute}</MenuItem>)}
+        {MINUTE_CHOICES.map(minute => <MenuItem value={minute} key={minute}>
+            {(minute < 60 || minute % 60 !== 0) ?
+              <>{minute} {t('jobs.schedule.minutesSmall', { count: minute })}</> :
+              <>{minute/60} {t('jobs.schedule.hoursSmall', { count: minute / 60 })}</>}
+          </MenuItem>)}
       </Select>
-      <span>{t('jobs.schedule.minutesSmall')}</span>
     </FormControl>
   </span>;
 }
@@ -194,7 +238,7 @@ function DayTimeSchedule({ initialSchedule, onChange = () => null }) {
     });
   }, [hour, minute, onChangeHook]);
 
-  return <span  className={classes.schedule}>
+  return <span className={classes.schedule}>
     <FormControl>
       <span>{t('jobs.schedule.everydayat')}</span>
       <Select value={hour} onChange={({target}) => setHour(parseInt(target.value))}>
@@ -470,15 +514,15 @@ const SCHEDULE_TYPES = {
   'onceAYearTime': parseOnceAYearTimeSchedule
 };
 
-function SchedulePreview({ schedule, scheduleType }) {
+function SchedulePreview({ schedule, scheduleType, expiresAt, timezone }) {
   const { t } = useTranslation();
   const classes = useStyles();
 
   const [ nextExecutions, setNextExecutions ] = useState([]);
 
   useEffect(() => {
-    setNextExecutions(schedule ? predictNextExecutions(schedule, ExecutionDate.now(), 5) : null);
-  }, [schedule]);
+    setNextExecutions(schedule ? predictNextExecutions({ ...schedule, expiresAt }, ExecutionDate.now(), 5) : null);
+  }, [schedule, expiresAt]);
 
   return <>
     {(!nextExecutions || !nextExecutions.length) && scheduleType === 'custom' && <Alert severity="warning" className={classes.alert}>
@@ -491,39 +535,117 @@ function SchedulePreview({ schedule, scheduleType }) {
           </ListItemText>
         </ListItem>)}
     </List>
+    {nextExecutions && <Box variant='caption' pl={1}><Typography variant='caption'>{t('jobs.schedule.jobTimezoneNote', { timezone })}</Typography></Box>}
   </>;
 }
 
-export default function JobSchedule({ initialSchedule, onChange = () => null }) {
+export default function JobSchedule({ initialSchedule, timezone, onChange = () => null }) {
   const classes = useStyles();
   const { t } = useTranslation();
+  const [ initSchedule, setInitSchedule ] = useState();
   const [ scheduleType, setScheduleType ] = useState('');
   const [ scheduleArgs, setScheduleArgs ] = useState();
+  const [ scheduleDoesExpire, setScheduleDoesExpire ] = useState(false);
+  const [ scheduleExpiresAt, setScheduleExpiresAt ] = useState(null);
+  const [ scheduleValid, setScheduleValid ] = useState(undefined);
+  const [ expiresAt, setExpiresAt ] = useState(0);
   const [ schedules, setSchedules ] = useState({});
   const [ crontabExpression, setCrontabExpression ] = useState(null);
+  const crontabExpressionFieldRef = useRef(null);
   const onChangeHook = useRef(onChange, []);
-  const { enqueueSnackbar } = useSnackbar();
   const { isMobile } = useViewport();
 
   useEffect(() => {
+    if (!initialSchedule) {
+      return;
+    }
+    setInitSchedule(initialSchedule);
+  }, [initialSchedule]);
+
+  useEffect(() => {
+    if (!initSchedule) {
+      return;
+    }
+
     const schedArgs = {
-      hours:    Object.values(initialSchedule.hours).map(x => parseInt(x)),
-      minutes:  Object.values(initialSchedule.minutes).map(x => parseInt(x)),
-      wdays:    Object.values(initialSchedule.wdays).map(x => parseInt(x)),
-      mdays:    Object.values(initialSchedule.mdays).map(x => parseInt(x)),
-      months:   Object.values(initialSchedule.months).map(x => parseInt(x))
+      hours:    Object.values(initSchedule.hours).map(x => parseInt(x)),
+      minutes:  Object.values(initSchedule.minutes).map(x => parseInt(x)),
+      wdays:    Object.values(initSchedule.wdays).map(x => parseInt(x)),
+      mdays:    Object.values(initSchedule.mdays).map(x => parseInt(x)),
+      months:   Object.values(initSchedule.months).map(x => parseInt(x))
     };
 
     setScheduleArgs(schedArgs);
     setScheduleType(Object.keys(SCHEDULE_TYPES).reduce((prev, cur) =>
       prev || (SCHEDULE_TYPES[cur](schedArgs) && cur),
       false) || 'custom');
-  }, [initialSchedule]);
+
+    if (initSchedule.expiresAt && initSchedule.expiresAt > 0) {
+      setScheduleDoesExpire(true);
+
+      const expiryStr = parseInt(initSchedule.expiresAt).toString().padStart(14, '0');
+      setScheduleExpiresAt({
+        mday: parseInt(expiryStr.substring(6, 8)),
+        month: parseInt(expiryStr.substring(4, 6)),
+        year: parseInt(expiryStr.substring(0, 4)),
+        hour: parseInt(expiryStr.substring(8, 10)),
+        minute: parseInt(expiryStr.substring(10, 12))
+      });
+
+    } else {
+      setScheduleDoesExpire(false);
+
+      const date = new Date();
+      setScheduleExpiresAt({
+        mday: date.getDate(),
+        month: date.getMonth() + 1,
+        year: date.getFullYear() + 1,
+        hour: date.getHours(),
+        minute: date.getMinutes()
+      });
+    }
+  }, [initSchedule]);
 
   useEffect(() => {
-    setCrontabExpression(scheduleToCrontabExpression(schedules[scheduleType]));
-    onChangeHook.current(schedules[scheduleType]);
-  }, [schedules, scheduleType, onChangeHook]);
+    if (document.activeElement !== crontabExpressionFieldRef.current) {
+      setCrontabExpression(scheduleToCrontabExpression(schedules[scheduleType]));
+    }
+
+    onChangeHook.current({
+      ...schedules[scheduleType],
+      expiresAt
+    });
+  }, [schedules, scheduleType, expiresAt, onChangeHook, crontabExpressionFieldRef]);
+
+  useEffect(() => {
+    setScheduleValid(undefined);
+  }, [schedules]);
+
+  useEffect(() => {
+    let newValue = 0;
+    if (scheduleDoesExpire) {
+      newValue = scheduleExpiresAt.year * 10000000000
+        + scheduleExpiresAt.month * 100000000
+        + scheduleExpiresAt.mday * 1000000
+        + scheduleExpiresAt.hour * 10000
+        + scheduleExpiresAt.minute * 100;
+    }
+    setExpiresAt(newValue);
+  }, [scheduleDoesExpire, scheduleExpiresAt]);
+
+  function setFromCrontabExpression(value) {
+    setCrontabExpression(value);
+    const parsed = crontabExpressionToSchedule(value);
+    if (parsed !== null) {
+      setInitSchedule({...initSchedule, ...parsed});
+      setScheduleValid(true);
+    } else {
+      setScheduleValid(false);
+    }
+  }
+
+  const expiryDropdownStartYear = Math.min(scheduleExpiresAt ? scheduleExpiresAt.year : (new Date().getFullYear()), (new Date().getFullYear()));
+  const numExpiryDropDownStartYearChoices = 11 + (scheduleExpiresAt ? Math.max(0, (new Date().getFullYear()) - scheduleExpiresAt.year) : 0)
 
   return <>
     <div className={!isMobile && classes.root}>
@@ -576,29 +698,66 @@ export default function JobSchedule({ initialSchedule, onChange = () => null }) 
       </div>
       <div className={clsx(classes.secondColumn, isMobile ? classes.helperMobile : classes.helper)}>
         <FormLabel component='legend'>{t('jobs.executionPreview')}</FormLabel>
-        <SchedulePreview schedule={schedules[scheduleType]} scheduleType={scheduleType} />
+        <SchedulePreview schedule={schedules[scheduleType]} scheduleType={scheduleType} expiresAt={expiresAt} timezone={timezone} />
       </div>
     </div>
 
     <div className={classes.crontabExpression}>
-      <TextField
-        value={crontabExpression || t('jobs.invalidSchedule')}
+      <CopyableTextField
+        value={crontabExpression === null ? t('jobs.invalidSchedule') : crontabExpression}
+        inputRef={crontabExpressionFieldRef}
         label={t('jobs.crontabExpression')}
         variant='outlined'
         size='small'
-        InputProps={{ endAdornment: crontabExpression && <InputAdornment position='end'>
-            <CopyToClipboard
-              text={crontabExpression}
-              onCopy={(text, result) => enqueueSnackbar(t(result ? 'jobs.crontabExpressionCopySuccess' : 'jobs.crontabExpressionCopyFailed'), { variant: result ? 'success' : 'error' })}
-              >
-              <IconButton size='small'>
-                <CopyIcon />
-              </IconButton>
-            </CopyToClipboard>
-          </InputAdornment>
-        }}
         fullWidth
+        successMsg={t('jobs.crontabExpressionCopySuccess')}
+        errorMsg={t('jobs.crontabExpressionCopyFailed')}
+        onChange={({target}) => setFromCrontabExpression(target.value)}
+        InputProps={scheduleValid === false ? { endAdornment: <ErrorIcon color='error' />} : {}}
+        error={scheduleValid === false}
         />
+    </div>
+
+    <div className={classes.scheduleExpiry}>
+      <FormGroup>
+        <FormControlLabel
+          control={<Switch
+            checked={scheduleDoesExpire}
+            onChange={({target}) => setScheduleDoesExpire(target.checked)}
+            />}
+          label={t('jobs.schedule.expires')}
+          />
+      </FormGroup>
+      {scheduleDoesExpire && <div className={clsx(classes.schedule, classes.scheduleExpiryAt)}>
+        <FormControl>
+          <span>{t('jobs.schedule.expiresAt')}</span>
+          <Select value={scheduleExpiresAt.mday} onChange={({target}) => setScheduleExpiresAt(sched => ({ ...sched, mday: parseInt(target.value) }))}>
+            {[...Array(31).keys()].map(md => <MenuItem value={md+1} key={md}>{md+1}.</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl>
+          <Select value={scheduleExpiresAt.month} onChange={({target}) => setScheduleExpiresAt(sched => ({ ...sched, month: parseInt(target.value) }))}>
+            {MONTHS.map(m => <MenuItem value={m} key={m}>{t(`common.months.${m-1}`)}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl>
+          <Select value={scheduleExpiresAt.year} onChange={({target}) => setScheduleExpiresAt(sched => ({ ...sched, year: parseInt(target.value) }))}>
+            {[...Array(numExpiryDropDownStartYearChoices).keys()].map(offset => expiryDropdownStartYear + offset).map(y => <MenuItem value={y} key={y}>{y}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl>
+          <span>{t('jobs.schedule.at')}</span>
+          <Select value={scheduleExpiresAt.hour} onChange={({target}) => setScheduleExpiresAt(sched => ({ ...sched, hour: parseInt(target.value) } ))}>
+            {[...Array(24).keys()].map(h => <MenuItem value={h} key={h}>{h}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl>
+          <span>:</span>
+          <Select value={scheduleExpiresAt.minute} onChange={({target}) => setScheduleExpiresAt(sched => ({ ...sched, minute: parseInt(target.value) } ))}>
+            {[...Array(60).keys()].map(m => <MenuItem value={m} key={m}>{('0'+m).slice(-2)}</MenuItem>)}
+          </Select>
+        </FormControl>
+      </div>}
     </div>
   </>;
 }

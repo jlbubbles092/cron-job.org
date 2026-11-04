@@ -1,6 +1,6 @@
 /*
  * chronos, the cron-job.org execution daemon
- * Copyright (C) 2017 Patrick Schlangen <patrick@schlangen.me>
+ * Copyright (C) 2017-2026 Patrick Schlangen <patrick@schlangen.me>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -12,14 +12,19 @@
 #include "Utils.h"
 
 #include <algorithm>
-#include <iostream>
+#include <ctime>
+#include <functional>
+#include <random>
+#include <stdexcept>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#include <strings.h>
 
 using namespace Chronos;
 
@@ -57,16 +62,26 @@ std::string Utils::trim(const std::string &in)
 
 void Utils::replace(std::string &str, const std::string &search, const std::string &repl)
 {
+	if(search.empty())
+	{
+		return;
+	}
+
 	size_t pos = 0;
 	while((pos = str.find(search, pos)) != std::string::npos)
 	{
 		str.replace(pos, search.length(), repl);
-		pos += search.length();
+		pos += repl.length();
 	}
 }
 
 std::string Utils::userPathPart(const int userID)
 {
+	if(userID < 0)
+	{
+		throw std::invalid_argument("userID must be non-negative!");
+	}
+
 	std::stringstream ss;
 	ss << std::hex << userID;
 	std::string userIdHex = ss.str();
@@ -157,13 +172,6 @@ bool Utils::mkPath(const std::string &path, const mode_t mode)
 	return true;
 }
 
-std::string Utils::toLower(const std::string &str)
-{
-	std::string result;
-	std::transform(str.begin(), str.end(), result.begin(), ::tolower);
-	return result;
-}
-
 std::vector<std::string> Utils::split(const std::string &str, char delimiter)
 {
 	std::vector<std::string> result;
@@ -188,7 +196,7 @@ std::string Utils::formatString(const std::string &in, const std::unordered_map<
 
 	for(auto it = in.begin(); it != in.end(); ++it)
 	{
-		if(*it == '%' && it != in.end())
+		if(*it == '%' && it + 1 != in.end())
 		{
 			char c = *++it;
 			auto argIt = arguments.find(c);
@@ -220,9 +228,114 @@ Utils::Subnet::Subnet(const std::string &cidrNotation)
 	const std::string bitsString = cidrNotation.substr(slashPos + 1);
 
 	int nBits = std::stoi(bitsString);
-	if(nBits > 32)
+	if(nBits < 0 || nBits > 32)
 		throw std::runtime_error("Invalid CIDR bits: " + cidrNotation);
 
-	this->netmask = htonl(0xFFFFFFFF << (32 - nBits));
+	this->netmask = (nBits == 0) ? 0 : htonl(0xFFFFFFFF << (32 - nBits));
 	this->maskedAddress = ::inet_addr(addressString.c_str()) & this->netmask;
+}
+
+std::string Utils::generateUuid4()
+{
+	static const char HEX_CHARS[] = "0123456789abcdef";
+	static_assert(sizeof(HEX_CHARS) == 16+1, "HEX_CHARS has unexpected size!");
+
+	static thread_local std::mt19937 rng{std::random_device{}()};
+	std::uniform_int_distribution<> dist(0, 15);
+
+	std::string res(36, '-');
+	res[14] = '4';
+	for(std::size_t i = 0; i < 36; ++i)
+	{
+		if (i != 8 && i != 13 && i != 14 && i != 18 && i != 19 && i != 23)
+		{
+			res[i] = HEX_CHARS[dist(rng)];
+		}
+		else if (i == 19)
+		{
+			res[i] = HEX_CHARS[(dist(rng) & 0x3) | 0x8];
+		}
+	}
+	return res;
+}
+
+std::string Utils::replaceVariables(const std::string &in)
+{
+	static const std::string VAR_PREFIX = "%cjo:";
+
+	static const std::unordered_map<std::string, std::function<std::string()>> VARIABLES =
+	{
+		{ "%cjo:unixtime%", [] () { return std::to_string(static_cast<uint64_t>(::time(nullptr))); } },
+		{ "%cjo:uuid4%", [] () { return Utils::generateUuid4(); } },
+	};
+
+	std::string res = in;
+	std::size_t pos = 0;
+	while((pos = res.find(VAR_PREFIX, pos)) != std::string::npos)
+	{
+		bool varMatched = false;
+
+		for(const auto &var : VARIABLES)
+		{
+			if(res.substr(pos, var.first.size()) == var.first)
+			{
+				std::string repl = var.second();
+				res.replace(pos, var.first.size(), repl);
+				pos += repl.size();
+				varMatched = true;
+				break;
+			}
+		}
+
+		if(!varMatched)
+		{
+			pos += VAR_PREFIX.size();
+		}
+	}
+
+	return res;
+}
+
+std::string Utils::sanitizeHttpHeaderKey(std::string key)
+{
+	static const std::unordered_set<char> forbiddenChars = {
+		// CTLs
+		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+		21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 127,
+		// Separators
+		'(', ')', '<', '>', '@',
+		',', ';', ':', '\\', '"',
+		'/', '[', ']', '?', '=',
+		'{', '}', ' '
+	};
+
+	key.erase(std::remove_if(key.begin(), key.end(),
+			[] (char c) { return forbiddenChars.count(c) != 0;  }),
+		key.end());
+
+	return key;
+}
+
+std::string Utils::sanitizeHttpHeaderValue(std::string value)
+{
+	static const std::unordered_set<char> forbiddenChars = {
+		10, 13
+	};
+
+	value.erase(std::remove_if(value.begin(), value.end(),
+			[] (char c) { return forbiddenChars.count(c) != 0;  }),
+		value.end());
+
+	return value;
+}
+
+bool Utils::isBannedHeaderKey(const std::string &key)
+{
+	if (strcasecmp(key.c_str(), "user-agent") == 0
+		|| strcasecmp(key.c_str(), "connection") == 0
+		|| strcasecmp(key.c_str(), "x-forwarded-for") == 0)
+	{
+		return true;
+	}
+	return false;
 }

@@ -11,7 +11,7 @@ class CreateStatusPage extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, RateLimit::SECOND),
       new RateLimit(5, RateLimit::MINUTE)
@@ -19,6 +19,10 @@ class CreateStatusPage extends AbstractAPIMethod {
   }
 
   public function validateRequest($request) {
+    global $config;
+    if ($config['statusPageDomain'] === null) {
+      return false;
+    }
     return (
          isset($request->title)
     );

@@ -1,4 +1,5 @@
 <?php
+require_once('config/denylists.inc.php');
 require_once('lib/APIMethod.php');
 require_once('resources/Job.php');
 
@@ -11,7 +12,7 @@ class CreateJob extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, RateLimit::SECOND),
       new RateLimit(5, RateLimit::MINUTE)
@@ -19,6 +20,17 @@ class CreateJob extends AbstractAPIMethod {
   }
 
   public function validateRequest($request) {
+    global $jobUrlDenyList;
+
+    if (isset($request->job->url)) {
+      $lowerUrl = strtolower($request->job->url);
+      foreach ($jobUrlDenyList as $deniedUrl) {
+        if (strpos($lowerUrl, $deniedUrl) !== false) {
+          return false;
+        }
+      }
+    }
+
     return (
          isset($request->job)
       && is_object($request->job)
@@ -32,7 +44,7 @@ class CreateJob extends AbstractAPIMethod {
 
     $jobId = (new JobManager($sessionToken))
       ->createJob($job);
-    
+
     if ($jobId === false) {
       throw new InternalErrorAPIException();
     }

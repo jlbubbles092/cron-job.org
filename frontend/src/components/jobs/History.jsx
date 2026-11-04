@@ -1,6 +1,6 @@
 import React from 'react';
 import Breadcrumbs from '../misc/Breadcrumbs';
-import { TableContainer, Paper, LinearProgress, Typography, Button } from '@material-ui/core';
+import { TableContainer, Paper, LinearProgress, Typography, Button, useTheme, Box, Switch, Tooltip as MuiTooltip, makeStyles } from '@material-ui/core';
 import { useTranslation } from 'react-i18next';
 import { useJob } from '../../hooks/useJobs';
 import NotFound from '../misc/NotFound';
@@ -14,25 +14,42 @@ import ErrorIcon from '@material-ui/icons/ErrorOutline';
 import ScheduleIcon from '@material-ui/icons/Schedule';
 import EditIcon from '@material-ui/icons/Edit';
 import IconAvatar from '../misc/IconAvatar';
-import { JobStatus, jobStatusText, TimingFields, ChartColors } from '../../utils/Constants';
+import { JobStatus, jobStatusText, TimingFields, ChartColors, ChartColorsDark } from '../../utils/Constants';
+import { Config } from '../../utils/Config';
+import { statusExplanationToken } from '../../utils/JobStatusInfo';
 import HistoryDetailsButton from './HistoryDetailsButton';
 import Heading from '../misc/Heading';
-import { useHistory } from 'react-router-dom';
+import { Link as RouterLink } from 'react-router-dom';
 import { ResponsiveContainer, AreaChart, XAxis, Area, YAxis, Tooltip } from 'recharts';
 import { formatMs } from '../../utils/Units';
 import useViewport from '../../hooks/useViewport';
+import useFolder from '../../hooks/useFolder';
+
+const useStyles = makeStyles(() => ({
+  statusWithHelp: {
+    textDecorationLine: 'underline',
+    textDecorationStyle: 'dotted',
+    cursor: 'help'
+  }
+}));
 
 const REFRESH_INTERVAL = 60000;
 
 export default function History({ match }) {
+  const { folderBreadcrumb, urlPrefix } = useFolder(match);
+
   const { t } = useTranslation();
   const jobId = parseInt(match.params.jobId);
   const { job, loading: pageLoading } = useJob(jobId);
   const [ history, setHistory ] = useState([]);
   const [ isLoading, setIsLoading ] = useState(true);
   const [ chartData, setChartData ] = useState(null);
-  const routerHistory = useHistory();
+  const [ useJobTimezone, setUseJobTimezone ] = useState(false);
   const { isMobile } = useViewport();
+  const classes = useStyles();
+  const theme = useTheme();
+  const tick = { fill: theme.palette.text.primary };
+  const localTimezone = moment.tz.guess();
 
   useEffect(() => {
     const doRefresh = async () => {
@@ -72,6 +89,13 @@ export default function History({ match }) {
     }
   }, [history]);
 
+  function m(timestamp) {
+    if (useJobTimezone && job && job.schedule && job.schedule.timezone) {
+      return moment(timestamp).tz(job.schedule.timezone);
+    }
+    return moment(timestamp);
+  }
+
   function formatTooltip(value, name) {
     return [
       formatMs(value, t),
@@ -94,12 +118,12 @@ export default function History({ match }) {
           {log.isPrediction && <IconAvatar icon={ScheduleIcon} />}
           {log.status === JobStatus.OK && <IconAvatar color='green' icon={SuccessIcon} />}
           {log.status >= JobStatus.FAILED_DNS && <IconAvatar color='orange' icon={ErrorIcon} />}
-          {!log.isPrediction && <div>{moment(log.date * 1000).calendar()}</div>}
+          {!log.isPrediction && <div>{m(log.date * 1000).calendar()}</div>}
       </div>
     },
     {
       head: t('jobs.scheduled'),
-      cell: log => moment(log.datePlanned * 1000).calendar()
+      cell: log => m(log.datePlanned * 1000).calendar()
     },
     {
       head: t('jobs.jitter'),
@@ -111,16 +135,29 @@ export default function History({ match }) {
     },
     {
       head: t('jobs.status'),
-      cell: log => log.isPrediction ? t('jobs.scheduled') : <>
-        <div>{t('jobs.statuses.' + jobStatusText(log.status))}</div>
-        {[JobStatus.OK, JobStatus.FAILED_HTTPERROR].includes(log.status) && <div><Typography variant="caption">
-            {log.httpStatus} {log.statusText}
-          </Typography></div>}
-      </>
+      cell: log => {
+        if (log.isPrediction) {
+          return t('jobs.scheduled');
+        }
+        const statusText = t('jobs.statuses.' + jobStatusText(log.status));
+        const explanationToken = statusExplanationToken(log.status, log.httpStatus);
+        return <>
+          <div>
+            {explanationToken ?
+              <MuiTooltip arrow title={t('jobs.statusExplanations.' + explanationToken, { serviceName: Config.productName })}>
+                <span className={classes.statusWithHelp}>{statusText}</span>
+              </MuiTooltip> :
+              statusText}
+          </div>
+          {[JobStatus.OK, JobStatus.FAILED_HTTPERROR].includes(log.status) && <div><Typography variant="caption">
+              {log.httpStatus} {log.statusText}
+            </Typography></div>}
+        </>;
+      }
     },
     {
       head: t('common.actions'),
-      cell: log => !log.isPrediction && <HistoryDetailsButton log={log} />
+      cell: log => !log.isPrediction && <HistoryDetailsButton log={log} moment={m} />
     }
   ];
 
@@ -130,12 +167,13 @@ export default function History({ match }) {
           href: '/jobs',
           text: t('common.cronjobs')
         },
+        ...folderBreadcrumb,
         {
-          href: '/jobs/' + jobId,
+          href: urlPrefix + '/' + jobId,
           text: job.title || job.url
         },
         {
-          href: '/jobs/' + jobId + '/history',
+          href: urlPrefix + '/' + jobId + '/history',
           text: t('jobs.history')
         }
       ]} />
@@ -144,21 +182,31 @@ export default function History({ match }) {
           variant='contained'
           size='small'
           startIcon={<EditIcon />}
-          onClick={() => routerHistory.push('/jobs/' + jobId)}
+          component={RouterLink}
+          to={`${urlPrefix}/${jobId}`}
           >{t('jobs.editJob')}</Button>
+      </>} otherElements={<>
+        {job && job.schedule && job.schedule.timezone && job.schedule.timezone !== localTimezone &&
+          <Box display='flex' flexDirection='row' alignItems='center' mr={2}>
+            <MuiTooltip title={localTimezone} arrow><Typography noWrap>{t('jobs.localTimezone')}</Typography></MuiTooltip>
+            <Switch
+              checked={useJobTimezone}
+              onChange={({target}) => setUseJobTimezone(target.checked)} />
+            <MuiTooltip title={job.schedule.timezone} arrow><Typography noWrap>{t('jobs.jobTimezone')}</Typography></MuiTooltip>
+          </Box>}
       </>}>
       {t('jobs.jobHistoryHeading', { jobTitle: job.title || job.url })}
     </Heading>
     {chartData && chartData.length > 2 && <>
         <ResponsiveContainer width='100%' height={200}>
         <AreaChart data={chartData} margin={{right: 30, left: 10, bottom: 20, top: 10}}>
-          <XAxis dataKey='date' type='category' tickFormatter={value => moment(value*1000).format('LT')} interval={isMobile ? 6 : 2} />
-          <YAxis type='number' tickFormatter={x => formatMs(x, t)} tickCount={3} />
+          <XAxis dataKey='date' type='category' tick={tick} tickFormatter={value => m(value*1000).format('LT')} interval={isMobile ? 6 : 2} />
+          <YAxis type='number' tick={tick} tickFormatter={x => formatMs(x, t)} tickCount={3} />
 
-          <Tooltip formatter={formatTooltip} labelFormatter={value => moment(value*1000).format('LLLL')} />
+          <Tooltip contentStyle={{backgroundColor: theme.palette.background.paper}} formatter={formatTooltip} labelFormatter={value => m(value*1000).format('LLLL')} />
 
           {TimingFields.map((item, index) =>
-            <Area type='monotone' dataKey={item} key={item} stackId='timing' stroke={ChartColors[index]} fill={ChartColors[index]} />)}
+            <Area type='monotone' dataKey={item} key={item} stackId='timing' stroke={theme.palette.type === 'dark' ? ChartColorsDark[index] : ChartColors[index]} fill={ChartColors[index]} />)}
         </AreaChart>
       </ResponsiveContainer>
     </>}

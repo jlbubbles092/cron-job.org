@@ -57,6 +57,10 @@ export function login(email, password, rememberMe = false, mfaCode = '') {
   }, false);
 }
 
+export function resendActivationEmail(email, password) {
+  return performRequest('ResendActivationEmail', { email, password }, false);
+}
+
 export function logout() {
   return performRequest('Logout', null, true, true);
 }
@@ -91,6 +95,13 @@ export function getJobDetails(jobId) {
   });
 }
 
+export function getJobStatusBadgeURL(jobId, options = {}) {
+  return performRequest('GetJobStatusBadgeURL', {
+    jobId,
+    ...options
+  });
+}
+
 export function getStatusPages() {
   return performRequest('GetStatusPages');
 }
@@ -98,6 +109,33 @@ export function getStatusPages() {
 export function getStatusPage(statusPageId) {
   return performRequest('GetStatusPage', {
     statusPageId
+  });
+}
+
+export function getFolders() {
+  return performRequest('GetFolders');
+}
+
+export function createFolder(title) {
+  return performRequest('CreateFolder', {
+    folder: {
+      title
+    }
+  });
+}
+
+export function updateFolder(folderId, title) {
+  return performRequest('UpdateFolder', {
+    folderId,
+    folder: {
+      title
+    }
+  });
+}
+
+export function deleteFolder(folderId) {
+  return performRequest('DeleteFolder', {
+    folderId
   });
 }
 
@@ -142,6 +180,30 @@ export function deleteStatusPageMonitor(monitorId) {
   });
 }
 
+export function createStatusPageIncident(statusPageId, title, description, startDate, status, closedAt = 0) {
+  return performRequest('CreateStatusPageIncident', {
+    statusPageId,
+    title,
+    description,
+    startDate,
+    status,
+    closedAt
+  });
+}
+
+export function updateStatusPageIncident(incidentId, incident) {
+  return performRequest('UpdateStatusPageIncident', {
+    incidentId,
+    incident
+  });
+}
+
+export function deleteStatusPageIncident(incidentId) {
+  return performRequest('DeleteStatusPageIncident', {
+    incidentId
+  });
+}
+
 export function createStatusPageDomain(statusPageId, domain) {
   return performRequest('CreateStatusPageDomain', {
     statusPageId,
@@ -173,10 +235,11 @@ export function updateJob(jobId, job) {
   });
 }
 
-export function executeJobMassAction(jobIds, action) {
+export function executeJobMassAction(jobIds, action, args = {}) {
   return performRequest('ExecuteJobMassAction', {
     jobIds,
-    action
+    action,
+    ...args
   });
 }
 
@@ -254,9 +317,10 @@ export function resetPassword(token, newPassword) {
   }, false);
 }
 
-export function createAccount(token, firstName, lastName, email, password, timezone) {
+export function createAccount(token, tokenType, firstName, lastName, email, password, timezone) {
   return performRequest('CreateAccount', {
     token,
+    tokenType,
     firstName,
     lastName,
     email,
@@ -284,11 +348,12 @@ export function updateUserNewsletterSubscribe(subscribe) {
   });
 }
 
-export function submitJobTestRun(token, jobId, job) {
+export function submitJobTestRun(token, tokenType, jobId, job) {
   return performRequest('SubmitJobTestRun', {
     jobId,
     job,
-    token
+    token,
+    tokenType
   });
 }
 
@@ -304,14 +369,8 @@ export function deleteJobTestRun(handle) {
   });
 }
 
-export function createCheckoutSession(product) {
-  return performRequest('CreateCheckoutSession', {
-    product
-  });
-}
-
-export function createBillingPortalSession() {
-  return performRequest('CreateBillingPortalSession', {});
+export function getSubscriptionLink(type) {
+  return performRequest('GetSubscriptionLink', { type });
 }
 
 export function getMFADevices() {
@@ -332,4 +391,56 @@ export function confirmMFADevice(mfaDeviceId, code) {
 
 export function deleteMFADevice(mfaDeviceId, password) {
   return performRequest('DeleteMFADevice', { mfaDeviceId, password });
+}
+
+export function getAPIKeys() {
+  return performRequest('GetAPIKeys', {});
+}
+
+export function getAPIKeyToken(apiKeyId, password) {
+  return performRequest('GetAPIKeyToken', { apiKeyId, password });
+}
+
+export function deleteAPIKey(apiKeyId) {
+  return performRequest('DeleteAPIKey', { apiKeyId });
+}
+
+export function createAPIKey(title, ipAddresses) {
+  const limitIPs = ipAddresses.split(',').map(x => x.trim()).filter(x => x.indexOf('.') > 0);
+  return performRequest('CreateAPIKey', { title, limitIPs });
+}
+
+export function updateAPIKey(apiKeyId, title, ipAddresses) {
+  const limitIPs = ipAddresses.split(',').map(x => x.trim()).filter(x => x.indexOf('.') > 0);
+  return performRequest('UpdateAPIKey', { apiKeyId, title, limitIPs });
+}
+
+export function getNotificationChannels() {
+  return performRequest('GetNotificationChannels', {});
+}
+
+export function createNotificationChannel(type, destination, enabled, payload, headers = [], preset = '') {
+  return performRequest('CreateNotificationChannel', { type, destination, enabled, payload, headers, preset });
+}
+
+export function confirmNotificationChannelEmail(token) {
+  return performRequest('ConfirmNotificationChannelEmail', {
+    token
+  }, false);
+}
+
+export function updateNotificationChannel(channelId, destination, enabled, payload, headers = [], preset = '') {
+  return performRequest('UpdateNotificationChannel', { channelId, destination, enabled, payload, headers, preset });
+}
+
+export function setNotificationChannelEnabled(channelId, enabled) {
+  return performRequest('SetNotificationChannelEnabled', { channelId, enabled });
+}
+
+export function deleteNotificationChannel(channelId) {
+  return performRequest('DeleteNotificationChannel', { channelId });
+}
+
+export function reenableUserNotifications() {
+  return performRequest('ReenableUserNotifications', {});
 }

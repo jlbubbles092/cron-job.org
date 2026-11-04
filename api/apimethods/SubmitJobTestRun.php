@@ -1,7 +1,8 @@
 <?php
+require_once('config/denylists.inc.php');
 require_once('lib/APIMethod.php');
 require_once('resources/Job.php');
-require_once('lib/RecaptchaVerifier.php');
+require_once('lib/TurnstileVerifier.php');
 
 class SubmitJobTestRun extends AbstractAPIMethod {
   static function name() {
@@ -12,7 +13,7 @@ class SubmitJobTestRun extends AbstractAPIMethod {
     return true;
   }
 
-  public function rateLimits() {
+  public function rateLimits($sessionToken) {
     return [
       new RateLimit(1, 2 * RateLimit::SECOND)
       //! @todo Also limit per job hostname
@@ -20,19 +21,31 @@ class SubmitJobTestRun extends AbstractAPIMethod {
   }
 
   public function validateRequest($request) {
+    global $config;
+    global $jobUrlDenyList;
+
+    if (isset($request->job->url)) {
+      $lowerUrl = strtolower($request->job->url);
+      foreach ($jobUrlDenyList as $deniedUrl) {
+        if (strpos($lowerUrl, $deniedUrl) !== false) {
+          return false;
+        }
+      }
+    }
+
     return (
          isset($request->jobId)
       && is_numeric($request->jobId)
       && isset($request->job)
       && is_object($request->job)
-      && isset($request->token)
+      && (isset($request->token) || $config['turnstileSecretKey'] === null)
     );
   }
 
   public function execute($request, $sessionToken, $language) {
     global $config;
 
-    if (!RecaptchaVerifier::verify($config['recaptchaSecretKey'], $request->token)) {
+    if ($config['turnstileSecretKey'] !== null && !TurnstileVerifier::verify($config['turnstileSecretKey'], $request->token)) {
       throw new ForbiddenAPIException();
     }
 
